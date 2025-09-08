@@ -1,0 +1,78 @@
+// For format details, see https://aka.ms/devcontainer.json. For config options, see the
+// README at: https://github.com/devcontainers/templates/tree/main/src/debian
+{
+  "name": "SystemBoard",
+  // Or use a Dockerfile or Docker Compose file. More info: https://containers.dev/guide/dockerfile
+  "image": "mcr.microsoft.com/devcontainers/base:bookworm",
+  "features": {
+    "ghcr.io/devcontainers/features/docker-in-docker:2": {
+      "moby": true,
+      "azureDnsAutoDetection": true,
+      "installDockerBuildx": true,
+      "installDockerComposeSwitch": true,
+      "version": "latest",
+      "dockerDashComposeVersion": "v2"
+    },
+    "ghcr.io/devcontainers/features/github-cli:1": {
+      "installDirectlyFromGitHubRelease": true,
+      "version": "latest"
+    },
+    "ghcr.io/devcontainers/features/java:1": {
+      "installMaven": true,
+      "version": "latest",
+      "jdkDistro": "ms",
+      "gradleVersion": "latest",
+      "mavenVersion": "latest",
+      "antVersion": "latest",
+      "groovyVersion": "latest"
+    },
+    "ghcr.io/devcontainers/features/node:1": {
+      "nodeGypDependencies": true,
+      "installYarnUsingApt": true,
+      "version": "24",
+      "pnpmVersion": "latest",
+      "nvmVersion": "latest"
+    },
+    "ghcr.io/devcontainers-extra/features/nestjs-cli:2": {
+      "version": "latest"
+    },
+    "ghcr.io/devcontainers-extra/features/ruby-asdf:0": {
+      "version": "latest"
+    }
+  },
+
+  // Use 'forwardPorts' to make a list of ports inside the container available locally.
+  // "forwardPorts": [],
+
+  // Configure tool-specific properties.
+  "customizations": {
+    "vscode": {
+      "extensions": [
+        "donjayamanne.githistory",
+        "eamodio.gitlens",
+        "jebbs.plantuml",
+        "shd101wyy.markdown-preview-enhanced",
+        "hediet.vscode-drawio",
+        "DavidAnson.vscode-markdownlint",
+        "marp-team.marp-vscode",
+        "Serhioromano.vscode-gitflow",
+        "cweijan.vscode-database-client2",
+        "Anthropic.claude-code",
+        "SonarSource.sonarlint-vscode",
+        "GitHub.vscode-github-actions"
+      ]
+    }
+  },
+
+  "mounts": [
+    {
+      "source": "${localEnv:HOME}${localEnv:USERPROFILE}",
+      "target": "/key",
+      "type": "bind"
+    }
+  ],
+
+  "postCreateCommand": "bash ./.devcontainer/create-container.sh"
+  // Uncomment to connect as root instead. More info: https://aka.ms/dev-containers-non-root.
+  // "remoteUser": "root"
+}
