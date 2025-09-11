@@ -1,0 +1,27 @@
+{
+  "name": "system-board",
+  "version": "0.1.0",
+  "description": "システムボード",
+  "main": "index.js",
+  "scripts": {
+    "build": "turbo build",
+    "lint": "turbo lint",
+    "format": "turbo format"
+  },
+  "keywords": [],
+  "author": {
+    "name": "masakazu kobayashi",
+    "email": "masakazu1967@yggdrasilroot.info"
+  },
+  "license": "ISC",
+  "packageManager": "pnpm@10.15.1",
+  "engines": {
+    "node": ">=24.0.0",
+    "npm": "pnpmを使用してください",
+    "yarn": "pnpmを使用してください",
+    "pnpm": ">=10.15.1"
+  },
+  "devDependencies": {
+    "turbo": "^2.5.6"
+  }
+}
