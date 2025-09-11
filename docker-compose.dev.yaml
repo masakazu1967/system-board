@@ -1,0 +1,97 @@
+services:
+  postgres:
+    image: postgres:16.4  # PostgreSQL 16 LTS version
+    container_name: system-board-postgres
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB}
+      POSTGRES_USER: ${POSTGRES_USER}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+    ports:
+      - "${POSTGRES_PORT:-5432}:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  eventstore:
+    image: eventstore/eventstore:24.2.0  # Latest stable version of EventStore
+    container_name: system-board-eventstore
+    environment:
+      EVENTSTORE_CLUSTER_SIZE: 1
+      EVENTSTORE_RUN_PROJECTIONS: All
+      EVENTSTORE_START_STANDARD_PROJECTIONS: true
+      EVENTSTORE_EXT_TCP_PORT: ${EVENTSTORE_TCP_PORT}
+      EVENTSTORE_HTTP_PORT: ${EVENTSTORE_HTTP_PORT}
+      EVENTSTORE_INSECURE: true
+      EVENTSTORE_ENABLE_EXTERNAL_TCP: true
+      EVENTSTORE_ENABLE_ATOM_PUB_OVER_HTTP: true
+    ports:
+      - "${EVENTSTORE_TCP_PORT}:${EVENTSTORE_TCP_PORT}"
+      - "${EVENTSTORE_HTTP_PORT}:${EVENTSTORE_HTTP_PORT}"
+    volumes:
+      - eventstore_data:/var/lib/eventstore
+    healthcheck:
+      test: ["CMD-SHELL", "curl -f http://localhost:${EVENTSTORE_HTTP_PORT}/health/live || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  redis:
+    image: redis:7.4.0  # Latest stable Redis version
+    container_name: system-board-redis
+    ports:
+      - "${REDIS_PORT}:6379"
+    volumes:
+      - redis_data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  zookeeper:
+    # Using Confluent CP for better Kafka integration and enterprise features
+    image: confluentinc/cp-zookeeper:7.7.0
+    container_name: system-board-zookeeper
+    environment:
+      ZOOKEEPER_CLIENT_PORT: ${ZOOKEEPER_PORT}
+      ZOOKEEPER_TICK_TIME: 2000
+    ports:
+      - "${ZOOKEEPER_PORT}:${ZOOKEEPER_PORT}"
+    volumes:
+      - zookeeper_data:/var/lib/zookeeper/data
+      - zookeeper_logs:/var/lib/zookeeper/log
+
+  kafka:
+    # Using Confluent CP for better tooling and Kafka management features
+    image: confluentinc/cp-kafka:7.7.0
+    container_name: system-board-kafka
+    depends_on:
+      - zookeeper
+    ports:
+      - "${KAFKA_PORT}:9092"
+    environment:
+      KAFKA_BROKER_ID: 1
+      KAFKA_ZOOKEEPER_CONNECT: zookeeper:${ZOOKEEPER_PORT}
+      KAFKA_ADVERTISED_LISTENERS: PLAINTEXT://localhost:${KAFKA_PORT}
+      KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 1
+      KAFKA_TRANSACTION_STATE_LOG_MIN_ISR: 1
+      KAFKA_TRANSACTION_STATE_LOG_REPLICATION_FACTOR: 1
+    volumes:
+      - kafka_data:/var/lib/kafka/data
+    healthcheck:
+      test: ["CMD-SHELL", "kafka-topics --bootstrap-server localhost:${KAFKA_PORT} --list"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+
+volumes:
+  postgres_data:
+  eventstore_data:
+  redis_data:
+  zookeeper_data:
+  zookeeper_logs:
+  kafka_data:
