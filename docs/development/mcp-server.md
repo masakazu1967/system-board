@@ -188,24 +188,47 @@ Model Context Protocol (MCP) は、AIシステムと外部データソース・�
 
 ## Context7の導入・使用方法
 
+### 前提条件
+
+- Node.js v18.0.0以上
+- npm または pnpm
+- Upstash無料アカウント（API Key取得のため）
+
+### API Key取得
+
+1. [Upstash](https://upstash.com) にアクセスしてアカウント作成
+2. Context7サービスでAPI Keyを取得（無料利用可能）
+
 ### インストール
 
-#### Claude Desktop向け
+```bash
+claude mcp add context7 -s project -- npx -y @upstash/context7-mcp
+```
+
+#### 環境変数設定（オプション）
+
+API Keyを環境変数で管理する場合：
+
+```bash
+# .envファイルまたはシェル設定に追加
+export CONTEXT7_API_KEY=your_api_key_here
+```
+
+設定ファイルでは環境変数を参照：
 
 ```json
 {
   "mcpServers": {
     "context7": {
       "command": "npx",
-      "args": ["-y", "@upstash/context7-mcp", "--api-key", "YOUR_API_KEY"]
+      "args": ["-y", "@upstash/context7-mcp", "--api-key", "${CONTEXT7_API_KEY}"],
+      "env": {
+        "CONTEXT7_API_KEY": "your_api_key_here"
+      }
     }
   }
 }
 ```
-
-#### Cursor向け
-
-`~/.cursor/mcp.json` に設定を追加
 
 ### 使用方法
 
@@ -218,25 +241,22 @@ Model Context Protocol (MCP) は、AIシステムと外部データソース・�
 
 ## Serenaの導入・使用方法
 
-### Serenaインストール
+### 前提条件(Serena)
 
-#### 直接実行（推奨）
+- Python 3.8以上
+- uv（Python パッケージインストーラー）
+
+### uvインストール
 
 ```bash
-uvx --from git+https://github.com/oraios/serena serena start-mcp-server
+# macOS/Linux
+curl -LsSf https://astral.sh/uv/install.sh | sh
 ```
 
-#### Claude Desktop向け設定
+### Serenaインストール
 
-```json
-{
-  "mcpServers": {
-    "serena": {
-      "command": "uvx",
-      "args": ["--from", "git+https://github.com/oraios/serena", "serena", "start-mcp-server"]
-    }
-  }
-}
+```bash
+claude mcp add serena -s project -- uvx --from git+https://github.com/oraios/serena serena start-mcp-server --context ide-assistant --project $(pwd)
 ```
 
 ### 機能
