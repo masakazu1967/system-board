@@ -17,8 +17,6 @@ sudo umount /key
 sudo apt update
 sudo apt upgrade -y
 
-sudo apt install -y git-flow
-
 npm install -g @anthropic-ai/claude-code
 npm install -g @google/gemini-cli
 
