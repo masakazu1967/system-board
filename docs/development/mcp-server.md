@@ -93,6 +93,13 @@ Model Context Protocol (MCP) は、AIシステムと外部データソース・�
 
 ### 4. テスト・品質管理
 
+#### Playwright MCP Server
+
+- **用途**: ブラウザ自動化・テスト、UI/UXリサーチ
+- **対象ロール**: テストエンジニア、UX/UIデザイナー、フロントエンドエンジニア
+- **使用場面**: ユーザビリティテストの自動化、A/Bテスト実行、レスポンシブデザインテスト、アクセシビリティチェック
+- **特徴**: Chrome、Firefox、Safari、Edge対応、AIエージェントによる構造化ブラウザ操作
+
 #### Node.js Code Sandbox MCP Server
 
 - **用途**: 隔離されたJavaScript実行環境、テスト環境
@@ -133,7 +140,30 @@ Model Context Protocol (MCP) は、AIシステムと外部データソース・�
 - **対象ロール**: フロントエンドエンジニア（ゲーム開発時）
 - **使用場面**: ゲーム開発、3Dビジュアライゼーション
 
-### 7. コミュニケーション・プロジェクト管理
+### 7. UX/UI開発
+
+#### Figma MCP Server
+
+- **用途**: Figma設計からReactコンポーネント変換、デザインシステム統合
+- **対象ロール**: UX/UIデザイナー、フロントエンドエンジニア
+- **使用場面**: デザインtoコード変換、コンポーネントライブラリ維持、プロトタイピング高速化
+- **特徴**: 自然言語によるFigma操作、Design Mode連携
+
+#### Magic UI MCP Server
+
+- **用途**: AI駆動UI コンポーネント生成、自然言語によるUI開発
+- **対象ロール**: UX/UIデザイナー、フロントエンドエンジニア
+- **使用場面**: モダンUIコンポーネント即座生成、IDE統合開発ワークフロー
+- **特徴**: 最小エラーでのコード生成、IDE シームレス統合
+
+#### Material UI MCP Server
+
+- **用途**: Material UI公式ドキュメント・コード例直接参照
+- **対象ロール**: フロントエンドエンジニア、UX/UIデザイナー  
+- **使用場面**: Material UIコンポーネント実装、最新ドキュメント参照
+- **特徴**: 公式ドキュメント正確性、リアルタイム更新
+
+### 8. コミュニケーション・プロジェクト管理
 
 #### Slack MCP Server
 
@@ -166,16 +196,20 @@ Model Context Protocol (MCP) は、AIシステムと外部データソース・�
 
 ### 中優先度（プロジェクト進行に合わせて導入）
 
-1. **Kubernetes MCP Server** - 本番環境スケーリング時
-2. **Auth0 MCP Server** - 認証機能実装時
-3. **Mermaid MCP Server** - ドキュメント自動生成
-4. **Terminal Access MCP Server** - デバッグ・運用時
+1. **Playwright MCP Server** - UX/UI テスト自動化時
+2. **Figma MCP Server** - デザインシステム実装時
+3. **Kubernetes MCP Server** - 本番環境スケーリング時
+4. **Auth0 MCP Server** - 認証機能実装時
+5. **Mermaid MCP Server** - ドキュメント自動生成
+6. **Terminal Access MCP Server** - デバッグ・運用時
 
 ### 低優先度（必要に応じて導入）
 
-1. **Slack MCP Server** - チーム規模拡大時
-2. **Zapier MCP Server** - 外部サービス連携時
-3. **Burp Suite MCP Server** - セキュリティテスト強化時
+1. **Magic UI MCP Server** - UIコンポーネント生成強化時
+2. **Material UI MCP Server** - Material UI採用時
+3. **Slack MCP Server** - チーム規模拡大時
+4. **Zapier MCP Server** - 外部サービス連携時
+5. **Burp Suite MCP Server** - セキュリティテスト強化時
 
 ## セキュリティ考慮事項
 

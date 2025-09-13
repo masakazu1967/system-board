@@ -35,6 +35,10 @@ pnpm operating-system start:dev
 
 その他のpnpmコマンドも同様にプロジェクトルートから実行可能
 
+## プロダクトマネージャー
+
+- 小林正和 (@masakazu1967)
+
 ## サブエージェント
 
 - 要求分析
