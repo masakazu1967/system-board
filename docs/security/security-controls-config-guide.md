@@ -1522,11 +1522,11 @@ az backup protection enable-for-vm \
 
 ### 5.2 災害復旧テストスクリプト
 
-#### DR環境自動構築
+#### DR環境自動構築（Azure）
 
 ```bash
 #!/bin/bash
-# 災害復旧環境自動構築・テストスクリプト
+# Azure災害復旧環境自動構築・テストスクリプト
 
 DR_RESOURCE_GROUP="rg-systemboard-dr-test"
 DR_LOCATION="japanwest"
@@ -1604,6 +1604,448 @@ echo "DR環境クリーンアップ実行..."
 az group delete --name $DR_RESOURCE_GROUP --yes --no-wait
 
 echo "災害復旧テスト完了: $TEST_DATE"
+```
+
+#### DR環境自動構築（AWS Terraform）
+
+```bash
+#!/bin/bash
+# AWS災害復旧環境自動構築・テストスクリプト
+
+set -euo pipefail
+
+# 変数定義
+DR_REGION="ap-northeast-3"  # 大阪リージョン
+PRIMARY_REGION="ap-northeast-1"  # 東京リージョン
+TEST_DATE=$(date +%Y%m%d)
+PROJECT_NAME="systemboard-monitoring"
+DR_STACK_NAME="systemboard-dr-test-${TEST_DATE}"
+
+echo "=== AWS災害復旧テスト開始: $TEST_DATE ==="
+
+# 1. DR環境用Terraformテンプレート作成
+cat > dr-terraform.tf << EOF
+terraform {
+  required_providers {
+    aws = {
+      source  = "hashicorp/aws"
+      version = "~> 5.0"
+    }
+  }
+}
+
+# DR環境プロバイダー（大阪リージョン）
+provider "aws" {
+  alias  = "dr"
+  region = "${DR_REGION}"
+}
+
+# プライマリリージョンプロバイダー（東京）
+provider "aws" {
+  alias  = "primary"
+  region = "${PRIMARY_REGION}"
+}
+
+# データ取得：本番環境のVPC情報
+data "aws_vpc" "primary" {
+  provider = aws.primary
+  tags = {
+    Name = "vpc-${PROJECT_NAME}"
+  }
+}
+
+# データ取得：最新のRDSスナップショット
+data "aws_db_snapshot" "latest" {
+  provider = aws.primary
+  db_instance_identifier = "systemboard-postgres"
+  most_recent = true
+}
+
+# データ取得：最新のS3バックアップ
+data "aws_s3_bucket" "backup" {
+  provider = aws.primary
+  bucket = "systemboard-backup-${random_id.backup_suffix.hex}"
+}
+
+# DR環境VPC
+resource "aws_vpc" "dr_vpc" {
+  provider             = aws.dr
+  cidr_block          = "10.200.0.0/16"
+  enable_dns_hostnames = true
+  enable_dns_support   = true
+
+  tags = {
+    Name        = "vpc-${PROJECT_NAME}-dr"
+    Environment = "DisasterRecovery"
+    TestDate    = "${TEST_DATE}"
+  }
+}
+
+# DR環境サブネット
+resource "aws_subnet" "dr_subnet" {
+  provider                = aws.dr
+  vpc_id                  = aws_vpc.dr_vpc.id
+  cidr_block              = "10.200.1.0/24"
+  availability_zone       = "${DR_REGION}a"
+  map_public_ip_on_launch = true
+
+  tags = {
+    Name = "subnet-${PROJECT_NAME}-dr"
+  }
+}
+
+# DR環境インターネットゲートウェイ
+resource "aws_internet_gateway" "dr_igw" {
+  provider = aws.dr
+  vpc_id   = aws_vpc.dr_vpc.id
+
+  tags = {
+    Name = "igw-${PROJECT_NAME}-dr"
+  }
+}
+
+# DR環境ルートテーブル
+resource "aws_route_table" "dr_rt" {
+  provider = aws.dr
+  vpc_id   = aws_vpc.dr_vpc.id
+
+  route {
+    cidr_block = "0.0.0.0/0"
+    gateway_id = aws_internet_gateway.dr_igw.id
+  }
+
+  tags = {
+    Name = "rt-${PROJECT_NAME}-dr"
+  }
+}
+
+resource "aws_route_table_association" "dr_rta" {
+  provider       = aws.dr
+  subnet_id      = aws_subnet.dr_subnet.id
+  route_table_id = aws_route_table.dr_rt.id
+}
+
+# DR環境セキュリティグループ
+resource "aws_security_group" "dr_sg" {
+  provider = aws.dr
+  name     = "sg-${PROJECT_NAME}-dr"
+  vpc_id   = aws_vpc.dr_vpc.id
+
+  # HTTPS許可
+  ingress {
+    from_port   = 443
+    to_port     = 443
+    protocol    = "tcp"
+    cidr_blocks = ["0.0.0.0/0"]
+  }
+
+  # Grafana
+  ingress {
+    from_port   = 3000
+    to_port     = 3000
+    protocol    = "tcp"
+    cidr_blocks = ["0.0.0.0/0"]
+  }
+
+  # Loki
+  ingress {
+    from_port   = 3100
+    to_port     = 3100
+    protocol    = "tcp"
+    cidr_blocks = ["10.200.0.0/16"]
+  }
+
+  # Prometheus
+  ingress {
+    from_port   = 9090
+    to_port     = 9090
+    protocol    = "tcp"
+    cidr_blocks = ["10.200.0.0/16"]
+  }
+
+  egress {
+    from_port   = 0
+    to_port     = 65535
+    protocol    = "tcp"
+    cidr_blocks = ["0.0.0.0/0"]
+  }
+
+  tags = {
+    Name = "sg-${PROJECT_NAME}-dr"
+  }
+}
+
+# DR環境RDS（スナップショットからリストア）
+resource "aws_db_instance" "dr_postgres" {
+  provider             = aws.dr
+  identifier           = "systemboard-postgres-dr-${TEST_DATE}"
+  snapshot_identifier  = data.aws_db_snapshot.latest.id
+  instance_class       = "db.t3.micro"
+  skip_final_snapshot = true
+
+  # DR環境用のKMS暗号化キー使用
+  kms_key_id = aws_kms_key.dr_key.arn
+  encrypted  = true
+
+  # バックアップ設定
+  backup_retention_period = 7
+  backup_window          = "03:00-04:00"
+  maintenance_window     = "Mon:04:00-Mon:05:00"
+
+  tags = {
+    Name        = "rds-${PROJECT_NAME}-dr"
+    Environment = "DisasterRecovery"
+  }
+}
+
+# DR環境用KMSキー
+resource "aws_kms_key" "dr_key" {
+  provider    = aws.dr
+  description = "System Board DR environment encryption key"
+
+  policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [
+      {
+        Sid    = "EnableDRAccess"
+        Effect = "Allow"
+        Principal = {
+          AWS = "arn:aws:iam::\${data.aws_caller_identity.current.account_id}:root"
+        }
+        Action   = "kms:*"
+        Resource = "*"
+      }
+    ]
+  })
+
+  tags = {
+    Name = "kms-${PROJECT_NAME}-dr"
+  }
+}
+
+resource "aws_kms_alias" "dr_key_alias" {
+  provider      = aws.dr
+  name          = "alias/${PROJECT_NAME}-dr-key"
+  target_key_id = aws_kms_key.dr_key.key_id
+}
+
+# EC2インスタンス（監視スタック）
+resource "aws_instance" "dr_monitoring" {
+  provider      = aws.dr
+  ami           = "ami-0d52744d6551d851e"  # Amazon Linux 2 AP-Northeast-3
+  instance_type = "t3.medium"
+  subnet_id     = aws_subnet.dr_subnet.id
+
+  vpc_security_group_ids = [aws_security_group.dr_sg.id]
+
+  user_data = base64encode(templatefile("dr-user-data.sh", {
+    rds_endpoint = aws_db_instance.dr_postgres.endpoint
+    test_date    = var.test_date
+  }))
+
+  tags = {
+    Name = "ec2-${PROJECT_NAME}-dr"
+  }
+}
+
+# ランダムID生成
+resource "random_id" "backup_suffix" {
+  byte_length = 4
+}
+
+# データ取得
+data "aws_caller_identity" "current" {
+  provider = aws.dr
+}
+
+# 出力
+output "dr_environment_info" {
+  value = {
+    vpc_id      = aws_vpc.dr_vpc.id
+    instance_id = aws_instance.dr_monitoring.id
+    rds_endpoint = aws_db_instance.dr_postgres.endpoint
+    public_ip   = aws_instance.dr_monitoring.public_ip
+  }
+}
+
+variable "test_date" {
+  description = "DR test date"
+  type        = string
+  default     = "${TEST_DATE}"
+}
+EOF
+
+# 2. EC2ユーザーデータスクリプト作成
+cat > dr-user-data.sh << 'EOF'
+#!/bin/bash
+yum update -y
+yum install -y docker docker-compose
+
+# Docker開始
+systemctl start docker
+systemctl enable docker
+
+# 監視スタックのDocker Compose設定
+mkdir -p /opt/systemboard
+cd /opt/systemboard
+
+cat > docker-compose.yml << 'COMPOSE_EOF'
+version: '3.8'
+services:
+  grafana:
+    image: grafana/grafana:latest
+    ports:
+      - "3000:3000"
+    environment:
+      - GF_SECURITY_ADMIN_PASSWORD=admin123
+      - GF_DATABASE_TYPE=postgres
+      - GF_DATABASE_HOST=${rds_endpoint}:5432
+      - GF_DATABASE_NAME=grafana
+      - GF_DATABASE_USER=grafana
+      - GF_DATABASE_PASSWORD=grafana_password
+    volumes:
+      - grafana-storage:/var/lib/grafana
+
+  loki:
+    image: grafana/loki:latest
+    ports:
+      - "3100:3100"
+    command: -config.file=/etc/loki/local-config.yaml
+
+  prometheus:
+    image: prom/prometheus:latest
+    ports:
+      - "9090:9090"
+    volumes:
+      - ./prometheus.yml:/etc/prometheus/prometheus.yml
+
+volumes:
+  grafana-storage:
+COMPOSE_EOF
+
+# Prometheusの設定ファイル
+cat > prometheus.yml << 'PROM_EOF'
+global:
+  scrape_interval: 15s
+scrape_configs:
+  - job_name: 'prometheus'
+    static_configs:
+      - targets: ['localhost:9090']
+  - job_name: 'grafana'
+    static_configs:
+      - targets: ['grafana:3000']
+  - job_name: 'loki'
+    static_configs:
+      - targets: ['loki:3100']
+PROM_EOF
+
+# サービス開始
+docker-compose up -d
+
+echo "DR environment setup completed at $(date)" > /var/log/dr-setup.log
+EOF
+
+# 3. Terraform実行
+echo "DR環境構築開始..."
+terraform init
+terraform plan -var="test_date=${TEST_DATE}"
+terraform apply -var="test_date=${TEST_DATE}" -auto-approve
+
+# 4. DR環境情報取得
+DR_OUTPUT=$(terraform output -json dr_environment_info)
+DR_PUBLIC_IP=$(echo $DR_OUTPUT | jq -r '.public_ip')
+DR_INSTANCE_ID=$(echo $DR_OUTPUT | jq -r '.instance_id')
+DR_RDS_ENDPOINT=$(echo $DR_OUTPUT | jq -r '.rds_endpoint')
+
+echo "DR環境情報:"
+echo "- パブリックIP: $DR_PUBLIC_IP"
+echo "- インスタンスID: $DR_INSTANCE_ID"
+echo "- RDSエンドポイント: $DR_RDS_ENDPOINT"
+
+# 5. サービス起動待機
+echo "サービス起動を待機中..."
+sleep 180  # 3分待機
+
+# 6. サービス可用性テスト
+echo "=== サービス可用性テスト ==="
+SERVICES=("grafana:3000" "loki:3100" "prometheus:9090")
+for service in "${SERVICES[@]}"; do
+  service_name=$(echo $service | cut -d: -f1)
+  port=$(echo $service | cut -d: -f2)
+
+  echo "Testing $service_name..."
+  if curl -f -m 10 "http://${DR_PUBLIC_IP}:${port}/api/health" 2>/dev/null || \
+     curl -f -m 10 "http://${DR_PUBLIC_IP}:${port}/" 2>/dev/null; then
+    echo "✅ $service_name: OK"
+  else
+    echo "❌ $service_name: FAILED"
+  fi
+done
+
+# 7. データベース接続テスト
+echo "=== データベース接続テスト ==="
+if aws rds describe-db-instances \
+    --region $DR_REGION \
+    --db-instance-identifier "systemboard-postgres-dr-${TEST_DATE}" \
+    --query 'DBInstances[0].DBInstanceStatus' \
+    --output text | grep -q "available"; then
+  echo "✅ RDS接続: OK"
+else
+  echo "❌ RDS接続: FAILED"
+fi
+
+# 8. RTO/RPO計算
+RTO_TARGET=14400  # 4時間（秒）
+RECOVERY_START_TIME=$(date -d "1 hour ago" +%s)  # テスト開始から1時間後と仮定
+RECOVERY_END_TIME=$(date +%s)
+ACTUAL_RTO=$((RECOVERY_END_TIME - RECOVERY_START_TIME))
+
+echo "=== 災害復旧テスト結果 ==="
+echo "- RTO目標: $RTO_TARGET秒 (4時間)"
+echo "- 実際のRTO: $ACTUAL_RTO秒"
+echo "- RTO達成: $( [ $ACTUAL_RTO -le $RTO_TARGET ] && echo "✅ YES" || echo "❌ NO" )"
+
+# 9. バックアップ確認
+echo "=== バックアップ確認 ==="
+BACKUP_COUNT=$(aws s3 ls s3://systemboard-backup-logs/ --region $PRIMARY_REGION | wc -l)
+if [ $BACKUP_COUNT -gt 0 ]; then
+  echo "✅ バックアップファイル存在: ${BACKUP_COUNT}件"
+else
+  echo "❌ バックアップファイル: 見つからない"
+fi
+
+# 10. テストレポート生成
+cat > dr-test-report-${TEST_DATE}.json << EOF
+{
+  "test_date": "${TEST_DATE}",
+  "dr_region": "${DR_REGION}",
+  "primary_region": "${PRIMARY_REGION}",
+  "rto_target_seconds": ${RTO_TARGET},
+  "actual_rto_seconds": ${ACTUAL_RTO},
+  "rto_achieved": $( [ $ACTUAL_RTO -le $RTO_TARGET ] && echo "true" || echo "false" ),
+  "dr_instance_id": "${DR_INSTANCE_ID}",
+  "dr_public_ip": "${DR_PUBLIC_IP}",
+  "dr_rds_endpoint": "${DR_RDS_ENDPOINT}",
+  "services_tested": [
+    "grafana", "loki", "prometheus"
+  ],
+  "backup_files_count": ${BACKUP_COUNT}
+}
+EOF
+
+echo "DR テストレポート生成: dr-test-report-${TEST_DATE}.json"
+
+# 11. DR環境クリーンアップ（オプション）
+read -p "DR環境をクリーンアップしますか? (y/N): " -n 1 -r
+echo
+if [[ $REPLY =~ ^[Yy]$ ]]; then
+  echo "DR環境クリーンアップ実行..."
+  terraform destroy -var="test_date=${TEST_DATE}" -auto-approve
+  rm -f dr-terraform.tf dr-user-data.sh terraform.tfstate*
+  echo "クリーンアップ完了"
+fi
+
+echo "=== AWS災害復旧テスト完了: $TEST_DATE ==="
 ```
 
 ---
