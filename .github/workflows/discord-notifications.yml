@@ -1,0 +1,71 @@
+name: Discord Notifications
+
+on:
+  issues:
+    types: [opened, closed, reopened]
+  issue_comment:
+    types: [created]
+  pull_request:
+    types: [opened, closed, reopened, review_requested]
+  pull_request_review:
+    types: [submitted]
+
+jobs:
+  discord-notification:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Issue Opened Notification
+        if: github.event_name == 'issues' && github.event.action == 'opened'
+        uses: Ilshidur/action-discord@master
+        env:
+          DISCORD_WEBHOOK: ${{ secrets.DISCORD_WEBHOOK_URL }}
+        with:
+          args: |
+            🚨 **新しいIssueが作成されました**
+            **タイトル:** ${{ github.event.issue.title }}
+            **作成者:** ${{ github.event.issue.user.login }}
+            **リンク:** ${{ github.event.issue.html_url }}
+
+      - name: Issue Comment with Mention Notification
+        if: |
+          github.event_name == 'issue_comment' && 
+          github.event.action == 'created' && 
+          contains(github.event.comment.body, '@masakazu1967')
+        uses: Ilshidur/action-discord@master
+        env:
+          DISCORD_WEBHOOK: ${{ secrets.DISCORD_WEBHOOK_URL }}
+        with:
+          args: |
+            📢 **@masakazu1967 宛のIssueコメント**
+            **Issue:** ${{ github.event.issue.title }}
+            **コメント者:** ${{ github.event.comment.user.login }}
+            **内容:** ${{ github.event.comment.body }}
+            **リンク:** ${{ github.event.comment.html_url }}
+
+      - name: PR Review Request Notification
+        if: |
+          github.event_name == 'pull_request' && 
+          github.event.action == 'review_requested' &&
+          contains(github.event.pull_request.requested_reviewers.*.login, 'masakazu1967')
+        uses: Ilshidur/action-discord@master
+        env:
+          DISCORD_WEBHOOK: ${{ secrets.DISCORD_WEBHOOK_URL }}
+        with:
+          args: |
+            🔍 **PRレビュー依頼**
+            **PR:** ${{ github.event.pull_request.title }}
+            **作成者:** ${{ github.event.pull_request.user.login }}
+            **レビュワー:** @masakazu1967
+            **リンク:** ${{ github.event.pull_request.html_url }}
+
+      - name: PR Opened Notification
+        if: github.event_name == 'pull_request' && github.event.action == 'opened'
+        uses: Ilshidur/action-discord@master
+        env:
+          DISCORD_WEBHOOK: ${{ secrets.DISCORD_WEBHOOK_URL }}
+        with:
+          args: |
+            ✨ **新しいPRが作成されました**
+            **タイトル:** ${{ github.event.pull_request.title }}
+            **作成者:** ${{ github.event.pull_request.user.login }}
+            **リンク:** ${{ github.event.pull_request.html_url }}
