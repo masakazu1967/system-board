@@ -14,6 +14,8 @@ System Board自己ホスティング監視スタック（パブリッククラ�
 
 ### 1.1 Azure環境でのセキュリティ基盤
 
+**注意**: 以下はAzure CLIでの設定例です。AWS環境での設定については「1.2 AWS環境でのセキュリティ基盤（Terraform）」を参照してください。
+
 #### Resource Group設定
 
 ```bash
@@ -132,7 +134,468 @@ az network nsg rule create \
   --protocol "*"
 ```
 
-### 1.2 暗号化・キー管理設定
+### 1.2 AWS環境でのセキュリティ基盤（Terraform）
+
+以下はAWS環境でのTerraform設定例です。
+
+#### VPC・ネットワークセキュリティ設定
+
+```hcl
+# main.tf
+# System Board 監視システム AWS基盤設定
+
+terraform {
+  required_version = ">= 1.0"
+  required_providers {
+    aws = {
+      source  = "hashicorp/aws"
+      version = "~> 5.0"
+    }
+  }
+}
+
+# プロバイダー設定（日本リージョン限定）
+provider "aws" {
+  region = "ap-northeast-1"  # Tokyo
+}
+
+provider "aws" {
+  alias  = "osaka"
+  region = "ap-northeast-3"  # Osaka（バックアップ用）
+}
+
+# データ主権確保のための変数定義
+locals {
+  project_name = "systemboard-monitoring"
+  environment  = "production"
+
+  tags = {
+    Project             = "SystemBoard"
+    Environment         = "Production"
+    Security            = "High"
+    DataClassification  = "Confidential"
+    DataResidency      = "Japan"
+  }
+}
+
+# VPC作成
+resource "aws_vpc" "monitoring_vpc" {
+  cidr_block           = "10.100.0.0/16"
+  enable_dns_hostnames = true
+  enable_dns_support   = true
+
+  tags = merge(local.tags, {
+    Name = "vpc-${local.project_name}"
+  })
+}
+
+# インターネットゲートウェイ（制限的使用）
+resource "aws_internet_gateway" "monitoring_igw" {
+  vpc_id = aws_vpc.monitoring_vpc.id
+
+  tags = merge(local.tags, {
+    Name = "igw-${local.project_name}"
+  })
+}
+
+# 機密データ処理サブネット（パブリックアクセス不可）
+resource "aws_subnet" "monitoring_critical" {
+  vpc_id                  = aws_vpc.monitoring_vpc.id
+  cidr_block              = "10.100.1.0/24"
+  availability_zone       = "ap-northeast-1a"
+  map_public_ip_on_launch = false
+
+  tags = merge(local.tags, {
+    Name = "subnet-monitoring-critical"
+    Tier = "Critical"
+  })
+}
+
+# 一般監視データサブネット
+resource "aws_subnet" "monitoring_standard" {
+  vpc_id                  = aws_vpc.monitoring_vpc.id
+  cidr_block              = "10.100.2.0/24"
+  availability_zone       = "ap-northeast-1b"
+  map_public_ip_on_launch = false
+
+  tags = merge(local.tags, {
+    Name = "subnet-monitoring-standard"
+    Tier = "Standard"
+  })
+}
+
+# アプリケーション統合サブネット
+resource "aws_subnet" "app_integration" {
+  vpc_id                  = aws_vpc.monitoring_vpc.id
+  cidr_block              = "10.100.3.0/24"
+  availability_zone       = "ap-northeast-1c"
+  map_public_ip_on_launch = true
+
+  tags = merge(local.tags, {
+    Name = "subnet-app-integration"
+    Tier = "Integration"
+  })
+}
+
+# NAT Gateway（アウトバウンドアクセス制御）
+resource "aws_eip" "nat_eip" {
+  domain = "vpc"
+
+  tags = merge(local.tags, {
+    Name = "eip-nat-${local.project_name}"
+  })
+}
+
+resource "aws_nat_gateway" "monitoring_nat" {
+  allocation_id = aws_eip.nat_eip.id
+  subnet_id     = aws_subnet.app_integration.id
+
+  tags = merge(local.tags, {
+    Name = "nat-${local.project_name}"
+  })
+
+  depends_on = [aws_internet_gateway.monitoring_igw]
+}
+
+# ルートテーブル設定
+resource "aws_route_table" "critical_rt" {
+  vpc_id = aws_vpc.monitoring_vpc.id
+
+  # NAT Gateway経由のみ（インターネットアクセス制限）
+  route {
+    cidr_block     = "0.0.0.0/0"
+    nat_gateway_id = aws_nat_gateway.monitoring_nat.id
+  }
+
+  tags = merge(local.tags, {
+    Name = "rt-critical"
+  })
+}
+
+resource "aws_route_table_association" "critical_rta" {
+  subnet_id      = aws_subnet.monitoring_critical.id
+  route_table_id = aws_route_table.critical_rt.id
+}
+
+# セキュリティグループ設定
+resource "aws_security_group" "monitoring_critical_sg" {
+  name_prefix = "sg-monitoring-critical"
+  vpc_id      = aws_vpc.monitoring_vpc.id
+
+  # HTTPSのみ許可（内部通信）
+  ingress {
+    from_port   = 443
+    to_port     = 443
+    protocol    = "tcp"
+    cidr_blocks = ["10.100.2.0/24"]
+  }
+
+  # LDAPS（Active Directory）
+  ingress {
+    from_port   = 636
+    to_port     = 636
+    protocol    = "tcp"
+    cidr_blocks = ["10.1.0.0/16"]  # 既存ADネットワーク
+  }
+
+  # アウトバウンド制限（NAT Gateway経由のみ）
+  egress {
+    from_port   = 443
+    to_port     = 443
+    protocol    = "tcp"
+    cidr_blocks = ["0.0.0.0/0"]
+  }
+
+  tags = merge(local.tags, {
+    Name = "sg-monitoring-critical"
+  })
+}
+
+resource "aws_security_group" "monitoring_standard_sg" {
+  name_prefix = "sg-monitoring-standard"
+  vpc_id      = aws_vpc.monitoring_vpc.id
+
+  # 標準監視通信
+  ingress {
+    from_port   = 3000
+    to_port     = 9090
+    protocol    = "tcp"
+    cidr_blocks = ["10.100.0.0/16"]
+  }
+
+  egress {
+    from_port   = 0
+    to_port     = 65535
+    protocol    = "tcp"
+    cidr_blocks = ["10.100.0.0/16"]
+  }
+
+  tags = merge(local.tags, {
+    Name = "sg-monitoring-standard"
+  })
+}
+```
+
+#### AWS KMS・暗号化設定
+
+```hcl
+# kms.tf
+# カスタマー管理キー設定
+
+# System Board メインデータ暗号化キー
+resource "aws_kms_key" "systemboard_data_key" {
+  description = "System Board製造データ・脆弱性情報専用暗号化キー - 製造業機密情報保護用のBYOKカスタマー管理暗号化キー"
+  key_usage   = "ENCRYPT_DECRYPT"
+  key_spec    = "SYMMETRIC_DEFAULT"
+
+  # ポリシー設定
+  policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [
+      {
+        Sid    = "EnableSystemBoardAccess"
+        Effect = "Allow"
+        Principal = {
+          AWS = [
+            aws_iam_role.monitoring_role.arn,
+            "arn:aws:iam::${data.aws_caller_identity.current.account_id}:root"
+          ]
+        }
+        Action = [
+          "kms:Decrypt",
+          "kms:Encrypt",
+          "kms:GenerateDataKey",
+          "kms:ReEncrypt*",
+          "kms:CreateGrant",
+          "kms:DescribeKey"
+        ]
+        Resource = "*"
+        Condition = {
+          StringEquals = {
+            "kms:ViaService" = [
+              "s3.ap-northeast-1.amazonaws.com",
+              "rds.ap-northeast-1.amazonaws.com"
+            ]
+          }
+        }
+      }
+    ]
+  })
+
+  # 削除保護
+  deletion_window_in_days = 30
+  enable_key_rotation     = true
+
+  tags = merge(local.tags, {
+    Name        = "kms-systemboard-data"
+    Purpose     = "ManufacturingDataEncryption"
+    KeyRotation = "Enabled"
+  })
+}
+
+# ログデータ専用キー
+resource "aws_kms_key" "systemboard_logs_key" {
+  description = "System Board監視ログ・トレースデータ専用暗号化キー"
+  key_usage   = "ENCRYPT_DECRYPT"
+  key_spec    = "SYMMETRIC_DEFAULT"
+
+  policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [
+      {
+        Sid    = "EnableLogsAccess"
+        Effect = "Allow"
+        Principal = {
+          AWS = aws_iam_role.monitoring_role.arn
+        }
+        Action = [
+          "kms:Decrypt",
+          "kms:Encrypt",
+          "kms:GenerateDataKey*"
+        ]
+        Resource = "*"
+      }
+    ]
+  })
+
+  deletion_window_in_days = 7  # ログは短期保持
+  enable_key_rotation     = true
+
+  tags = merge(local.tags, {
+    Name    = "kms-systemboard-logs"
+    Purpose = "LogDataEncryption"
+  })
+}
+
+# バックアップ専用キー
+resource "aws_kms_key" "systemboard_backup_key" {
+  description = "System Board災害復旧・バックアップ専用暗号化キー"
+  key_usage   = "ENCRYPT_DECRYPT"
+  key_spec    = "SYMMETRIC_DEFAULT"
+
+  # バックアップは大阪リージョンでも利用
+  policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [
+      {
+        Sid    = "EnableBackupAccess"
+        Effect = "Allow"
+        Principal = {
+          AWS = aws_iam_role.monitoring_role.arn
+        }
+        Action = [
+          "kms:Decrypt",
+          "kms:Encrypt",
+          "kms:GenerateDataKey*"
+        ]
+        Resource = "*"
+        Condition = {
+          StringEquals = {
+            "kms:ViaService" = [
+              "s3.ap-northeast-1.amazonaws.com",
+              "s3.ap-northeast-3.amazonaws.com"  # 大阪リージョン
+            ]
+          }
+        }
+      }
+    ]
+  })
+
+  deletion_window_in_days = 30
+  enable_key_rotation     = true
+
+  tags = merge(local.tags, {
+    Name    = "kms-systemboard-backup"
+    Purpose = "BackupEncryption"
+  })
+}
+
+# KMSキーエイリアス
+resource "aws_kms_alias" "systemboard_data_key_alias" {
+  name          = "alias/systemboard-data-encryption"
+  target_key_id = aws_kms_key.systemboard_data_key.key_id
+}
+
+resource "aws_kms_alias" "systemboard_logs_key_alias" {
+  name          = "alias/systemboard-logs-encryption"
+  target_key_id = aws_kms_key.systemboard_logs_key.key_id
+}
+
+resource "aws_kms_alias" "systemboard_backup_key_alias" {
+  name          = "alias/systemboard-backup-encryption"
+  target_key_id = aws_kms_key.systemboard_backup_key.key_id
+}
+
+# IAMロール（監視アプリケーション用）
+resource "aws_iam_role" "monitoring_role" {
+  name = "SystemBoardMonitoringRole"
+
+  assume_role_policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [
+      {
+        Action = "sts:AssumeRole"
+        Effect = "Allow"
+        Principal = {
+          Service = ["ec2.amazonaws.com", "ecs-tasks.amazonaws.com"]
+        }
+      }
+    ]
+  })
+
+  tags = local.tags
+}
+
+# S3バケット（ログストレージ）
+resource "aws_s3_bucket" "monitoring_logs" {
+  bucket = "systemboard-monitoring-logs-${random_string.bucket_suffix.result}"
+
+  tags = merge(local.tags, {
+    Name    = "s3-monitoring-logs"
+    Purpose = "LogStorage"
+  })
+}
+
+resource "aws_s3_bucket_encryption_configuration" "monitoring_logs_encryption" {
+  bucket = aws_s3_bucket.monitoring_logs.id
+
+  rule {
+    apply_server_side_encryption_by_default {
+      kms_master_key_id = aws_kms_key.systemboard_logs_key.arn
+      sse_algorithm     = "aws:kms"
+    }
+    bucket_key_enabled = true
+  }
+}
+
+# ランダム文字列（バケット名重複回避）
+resource "random_string" "bucket_suffix" {
+  length  = 8
+  special = false
+  upper   = false
+}
+
+# データ取得用
+data "aws_caller_identity" "current" {}
+```
+
+#### ネットワークACL設定
+
+```hcl
+# network_acls.tf
+# 追加のネットワーク層セキュリティ
+
+resource "aws_network_acl" "monitoring_critical_nacl" {
+  vpc_id     = aws_vpc.monitoring_vpc.id
+  subnet_ids = [aws_subnet.monitoring_critical.id]
+
+  # インバウンド: HTTPS のみ許可
+  ingress {
+    protocol   = "tcp"
+    rule_no    = 100
+    action     = "allow"
+    cidr_block = "10.100.2.0/24"
+    from_port  = 443
+    to_port    = 443
+  }
+
+  # インバウンド: LDAPS 許可
+  ingress {
+    protocol   = "tcp"
+    rule_no    = 110
+    action     = "allow"
+    cidr_block = "10.1.0.0/16"
+    from_port  = 636
+    to_port    = 636
+  }
+
+  # アウトバウンド: 必要最小限
+  egress {
+    protocol   = "tcp"
+    rule_no    = 100
+    action     = "allow"
+    cidr_block = "0.0.0.0/0"
+    from_port  = 443
+    to_port    = 443
+  }
+
+  # デフォルト拒否（明示的）
+  egress {
+    protocol   = "-1"
+    rule_no    = 32766
+    action     = "deny"
+    cidr_block = "0.0.0.0/0"
+    from_port  = 0
+    to_port    = 0
+  }
+
+  tags = merge(local.tags, {
+    Name = "nacl-monitoring-critical"
+  })
+}
+```
+
+### 1.3 暗号化・キー管理設定（Azure）
 
 #### Azure Key Vault設定
 
@@ -447,11 +910,162 @@ scrape_configs:
 
 ### 3.1 Active Directory統合
 
-#### Grafana LDAP設定
+#### Grafana Azure Active Directory設定
+
+**Azure Active Directory OAuth2.0統合** (推奨)
+
+```ini
+# /etc/grafana/grafana.ini
+# Azure AD OAuth2.0設定
+
+[auth.azuread]
+enabled = true
+name = Azure AD
+allow_sign_up = true
+client_id = ${AZURE_AD_CLIENT_ID}
+client_secret = ${AZURE_AD_CLIENT_SECRET}
+scopes = openid email profile
+auth_url = https://login.microsoftonline.com/${AZURE_TENANT_ID}/oauth2/v2.0/authorize
+token_url = https://login.microsoftonline.com/${AZURE_TENANT_ID}/oauth2/v2.0/token
+api_url = https://graph.microsoft.com/v1.0/me
+allowed_domains = company.local company.com
+allowed_groups =
+team_ids =
+allowed_organizations =
+role_attribute_path =
+role_attribute_strict = false
+allow_assign_grafana_admin = true
+
+# ユーザー自動作成設定
+[users]
+auto_assign_org = true
+auto_assign_org_id = 1
+auto_assign_org_role = Viewer
+
+# セキュリティ設定
+[security]
+disable_initial_admin_creation = true
+admin_user =
+admin_password =
+secret_key = ${GRAFANA_SECRET_KEY}
+disable_gravatar = true
+
+# ログイン設定
+[auth]
+oauth_auto_login = false
+disable_login_form = false
+disable_signout_menu = false
+```
+
+**Azure AD アプリケーション登録設定**
+
+```bash
+#!/bin/bash
+# Azure AD アプリケーション登録スクリプト
+
+TENANT_ID="your-tenant-id"
+APP_NAME="SystemBoard-Monitoring"
+GRAFANA_URL="https://grafana.systemboard-monitoring.local"
+
+# アプリケーション登録
+az ad app create \
+  --display-name $APP_NAME \
+  --web-redirect-uris "${GRAFANA_URL}/login/azuread" \
+  --required-resource-accesses '[
+    {
+      "resourceAppId": "00000003-0000-0000-c000-000000000000",
+      "resourceAccess": [
+        {
+          "id": "e1fe6dd8-ba31-4d61-89e7-88639da4683d",
+          "type": "Scope"
+        },
+        {
+          "id": "37f7f235-527c-4136-accd-4a02d197296e",
+          "type": "Scope"
+        },
+        {
+          "id": "14dad69e-099b-42c9-810b-d002981feec1",
+          "type": "Scope"
+        }
+      ]
+    }
+  ]'
+
+# クライアントシークレット作成
+az ad app credential reset \
+  --id $(az ad app list --display-name $APP_NAME --query "[0].appId" -o tsv) \
+  --password-display-name "Grafana-Secret" \
+  --years 2
+```
+
+**Azure AD条件付きアクセス設定**
+
+```powershell
+# PowerShell - 条件付きアクセスポリシー設定
+
+# 必要なモジュールのインポート
+Import-Module AzureAD
+
+# Azure AD接続
+Connect-AzureAD -TenantId "your-tenant-id"
+
+# System Board監視システム用条件付きアクセスポリシー
+$conditions = @{
+    Applications = @{
+        IncludeApplications = @("your-app-id")  # Grafanaアプリケーション
+    }
+    Users = @{
+        IncludeGroups = @("monitoring-users-group-id", "security-team-group-id")
+        ExcludeUsers = @("emergency-break-glass-account-id")
+    }
+    Locations = @{
+        IncludeLocations = @("office-location-id", "japan-location-id")
+    }
+    Platforms = @{
+        IncludePlatforms = @("Windows", "macOS")
+        ExcludePlatforms = @("iOS", "Android")  # モバイルデバイス制限
+    }
+    ClientApps = @{
+        IncludeClientApps = @("Browser")
+    }
+}
+
+$grantControls = @{
+    BuiltInControls = @("MFA", "CompliantDevice")
+    Operator = "AND"  # MFA AND 準拠デバイス必須
+}
+
+$sessionControls = @{
+    ApplicationEnforcedRestrictions = @{
+        IsEnabled = $true
+    }
+    SignInFrequency = @{
+        IsEnabled = $true
+        Type = "Hours"
+        Value = 4  # 4時間ごとに再認証
+    }
+    PersistentBrowser = @{
+        IsEnabled = $true
+        Mode = "Never"  # ブラウザでの認証情報保持禁止
+    }
+}
+
+# ポリシー作成
+New-AzureADMSConditionalAccessPolicy `
+    -DisplayName "System Board Monitoring - High Security Access" `
+    -State "Enabled" `
+    -Conditions $conditions `
+    -GrantControls $grantControls `
+    -SessionControls $sessionControls
+```
+
+#### Grafana 従来LDAP設定（オンプレミス AD）
+
+**注意**: オンプレミスActive DirectoryでLDAPSを使用する場合の設定例
 
 ```ini
 # /etc/grafana/ldap.toml
-# Active Directory統合設定
+# オンプレミス Active Directory統合設定
 
 [[servers]]
 host = "ad.company.local"
