@@ -883,12 +883,12 @@ end note
 
 ### 8.2 実施スケジュール
 
-| Week | Phase | 主担当 | 期間 |
+| Day | Phase | 主担当 | 期間 |
 |------|-------|--------|------|
-| Week 1 | Phase 1: Domain Events Discovery | Requirements Analyst | 2025年9月16日-20日 |
-| Week 2 | Phase 2: Commands & Actors Discovery | Backend System Architect | 2025年9月23日-27日 |
-| Week 3 | Phase 3: Policies & Business Rules Discovery | QA Testing Specialist | 2025年9月30日-10月4日 |
-| Week 4 | Phase 4: Aggregates & Bounded Context Discovery | Software Architecture Advisor | 2025年10月7日-11日 |
+| Day 1 | Phase 1: Domain Events Discovery | Requirements Analyst | 2025年9月14日 |
+| Day 2 | Phase 2: Commands & Actors Discovery | Backend System Architect | 2025年9月15日 |
+| Day 3 | Phase 3: Policies & Business Rules Discovery | QA Testing Specialist | 2025年9月16日 |
+| Day 4 | Phase 4: Aggregates & Bounded Context Discovery | Software Architecture Advisor | 2025年9月17日 |
 
 ### 8.3 成功指標
 
