@@ -15,6 +15,7 @@ System Board自己ホスティング監視スタック（パブリッククラ�
 ### 1.1 Azure環境でのセキュリティ基盤
 
 #### Resource Group設定
+
 ```bash
 #!/bin/bash
 # System Board 監視システム用リソースグループ作成
@@ -45,6 +46,7 @@ az group create \
 ```
 
 #### Virtual Network設定
+
 ```bash
 #!/bin/bash
 # VNet・マイクロセグメンテーション設定
@@ -82,6 +84,7 @@ az network vnet subnet create \
 ```
 
 #### Network Security Groups設定
+
 ```bash
 #!/bin/bash
 # NSGルール設定（機密データ処理サブネット用）
@@ -132,6 +135,7 @@ az network nsg rule create \
 ### 1.2 暗号化・キー管理設定
 
 #### Azure Key Vault設定
+
 ```bash
 #!/bin/bash
 # カスタマー管理キー設定
@@ -178,6 +182,7 @@ az keyvault key create \
 ```
 
 #### Key Vault アクセスポリシー設定
+
 ```bash
 #!/bin/bash
 # Key Vault アクセス制御設定
@@ -209,6 +214,7 @@ az keyvault set-policy \
 ### 2.1 Loki基本設定（セキュリティ強化）
 
 #### loki.yaml設定ファイル
+
 ```yaml
 # /etc/loki/loki.yaml
 # Grafana Loki セキュリティ強化設定
@@ -331,6 +337,7 @@ tracing:
 ### 2.2 機密データマスキング設定
 
 #### Promtail設定（データサニタイゼーション）
+
 ```yaml
 # /etc/promtail/promtail.yaml
 # 機密データ自動マスキング設定
@@ -441,6 +448,7 @@ scrape_configs:
 ### 3.1 Active Directory統合
 
 #### Grafana LDAP設定
+
 ```ini
 # /etc/grafana/ldap.toml
 # Active Directory統合設定
@@ -492,6 +500,7 @@ org_id = 1
 ```
 
 #### Grafana設定（認証強化）
+
 ```ini
 # /etc/grafana/grafana.ini
 # Grafana セキュリティ強化設定
@@ -576,6 +585,7 @@ max_days = 90
 ### 3.2 RBAC設定詳細
 
 #### Grafana データソース権限設定
+
 ```json
 {
   "datasourcePermissions": {
@@ -614,6 +624,7 @@ max_days = 90
 ### 4.1 Prometheus監視ルール
 
 #### セキュリティアラートルール
+
 ```yaml
 # /etc/prometheus/rules/security-alerts.yml
 groups:
@@ -708,6 +719,7 @@ groups:
 ### 4.2 AlertManager設定
 
 #### Microsoft Teams統合設定
+
 ```yaml
 # /etc/alertmanager/alertmanager.yml
 global:
@@ -785,6 +797,7 @@ inhibit_rules:
 ```
 
 #### Teams通知テンプレート
+
 ```go
 <!-- /etc/alertmanager/templates/teams.tmpl -->
 {{ define "teams.title" }}
@@ -827,6 +840,7 @@ inhibit_rules:
 ### 5.1 自動バックアップ設定
 
 #### Azure Backup設定スクリプト
+
 ```bash
 #!/bin/bash
 # System Board 監視システム自動バックアップ設定
@@ -895,6 +909,7 @@ az backup protection enable-for-vm \
 ### 5.2 災害復旧テストスクリプト
 
 #### DR環境自動構築
+
 ```bash
 #!/bin/bash
 # 災害復旧環境自動構築・テストスクリプト
@@ -984,6 +999,7 @@ echo "災害復旧テスト完了: $TEST_DATE"
 ### 6.1 セキュリティスキャン自動化
 
 #### 脆弱性スキャン設定
+
 ```bash
 #!/bin/bash
 # 定期脆弱性スキャン設定（cronで実行）
@@ -1021,6 +1037,7 @@ python3 /opt/security-tools/generate_security_report.py --scan-date $DATE --repo
 ### 6.2 コンプライアンス監査自動化
 
 #### 自動コンプライアンスチェック
+
 ```python
 #!/usr/bin/env python3
 # /opt/security-tools/compliance_checker.py
@@ -1157,6 +1174,7 @@ if __name__ == "__main__":
 ### 7.1 インシデント対応手順
 
 #### セキュリティインシデント対応スクリプト
+
 ```bash
 #!/bin/bash
 # /opt/incident-response/security_incident_handler.sh
@@ -1264,6 +1282,7 @@ curl -X POST "${TEAMS_SECURITY_WEBHOOK}" \
 ### 7.2 定期メンテナンス手順
 
 #### 週次セキュリティメンテナンス
+
 ```bash
 #!/bin/bash
 # /opt/maintenance/weekly_security_maintenance.sh

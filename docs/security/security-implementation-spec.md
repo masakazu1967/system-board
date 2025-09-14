@@ -5,6 +5,7 @@
 本文書では、System Board自己ホスティング監視スタック（パブリッククラウド環境）に対するセキュリティ要件と実装仕様を詳細化し、情報漏洩防止を最優先としたセキュリティ統制の実装ガイドラインを策定する。
 
 **対象システム**: System Board パブリッククラウド監視スタック
+
 - Grafana Loki (ログ集約・分析)
 - Jaeger (分散トレーシング)
 - OpenTelemetry (計装レイヤー)
@@ -20,6 +21,7 @@
 ### 1.1 データ主権・地理的制限
 
 #### 地理的データ保持要件
+
 ```yaml
 geographic_data_requirements:
   primary_region: "Japan East (Tokyo)"
@@ -42,6 +44,7 @@ geographic_data_requirements:
 ```
 
 #### Bring Your Own Key (BYOK) 暗号化
+
 ```yaml
 byok_encryption:
   key_management_service: "Azure Key Vault / AWS KMS"
@@ -64,6 +67,7 @@ byok_encryption:
 ### 1.2 ネットワーク分離・マイクロセグメンテーション
 
 #### VPCマイクロセグメンテーション設計
+
 ```yaml
 vpc_microsegmentation:
   production_vpc:
@@ -119,6 +123,7 @@ vpc_microsegmentation:
 ### 1.3 クラウドプロバイダーアクセス制御
 
 #### カスタマーロックボックス実装
+
 ```yaml
 customer_lockbox:
   microsoft_customer_lockbox: # Azure環境の場合
@@ -144,6 +149,7 @@ customer_lockbox:
 ### 2.1 機密情報自動マスキング（Grafana Loki対応）
 
 #### Grafana Loki機密データ処理
+
 ```yaml
 grafana_loki_security:
   log_processing_pipeline:
@@ -180,6 +186,7 @@ grafana_loki_security:
 ```
 
 #### Loki設定例（機密データ保護）
+
 ```yaml
 # loki.yaml - セキュリティ強化設定
 auth_enabled: true
@@ -233,6 +240,7 @@ schema_config:
 ### 2.2 多層暗号化アーキテクチャ
 
 #### クラウドネイティブ暗号化
+
 ```yaml
 multi_layer_encryption:
   layer1_transport:
@@ -269,6 +277,7 @@ multi_layer_encryption:
 ### 3.1 ハイブリッド認証アーキテクチャ
 
 #### Azure AD B2B / AWS IAM統合
+
 ```yaml
 hybrid_authentication:
   primary_idp: "企業Active Directory"
@@ -312,6 +321,7 @@ hybrid_authentication:
 ### 3.2 クラウドネイティブRBAC
 
 #### 細粒度権限管理
+
 ```yaml
 cloud_native_rbac:
   service_level_permissions:
@@ -362,6 +372,7 @@ cloud_native_rbac:
 ### 4.1 包括的監査ログ
 
 #### 製造業コンプライアンス対応
+
 ```yaml
 manufacturing_compliance_logging:
   regulatory_requirements:
@@ -407,6 +418,7 @@ manufacturing_compliance_logging:
 ```
 
 #### 監査ログ実装（Grafana Loki統合）
+
 ```yaml
 # promtail.yaml - 監査ログ専用設定
 server:
@@ -459,6 +471,7 @@ scrape_configs:
 ### 4.2 リアルタイムセキュリティ監視
 
 #### セキュリティイベント検知（Grafana統合）
+
 ```yaml
 security_event_detection:
   grafana_alerting_rules:
@@ -520,6 +533,7 @@ security_event_detection:
 ### 5.1 クラウド環境での災害復旧
 
 #### マルチリージョン災害復旧
+
 ```yaml
 disaster_recovery:
   primary_region: "Japan East (Tokyo)"
@@ -560,6 +574,7 @@ disaster_recovery:
 ### 5.2 インシデント対応プロセス
 
 #### 製造業特化インシデント対応
+
 ```yaml
 incident_response:
   incident_classification:
@@ -609,6 +624,7 @@ incident_response:
 ### 6.1 Phase別セキュリティ実装
 
 #### Phase 1: クラウド基盤セキュリティ（2週間）
+
 ```yaml
 phase_1_security_foundation:
   network_security:
@@ -630,6 +646,7 @@ phase_1_security_foundation:
 ```
 
 #### Phase 2: データ保護強化（2週間）
+
 ```yaml
 phase_2_data_protection:
   data_classification:
@@ -651,6 +668,7 @@ phase_2_data_protection:
 ```
 
 #### Phase 3: 高度セキュリティ統制（2週間）
+
 ```yaml
 phase_3_advanced_security:
   threat_detection:
@@ -675,6 +693,7 @@ phase_3_advanced_security:
 ### 6.2 成功基準・検証項目
 
 #### セキュリティ実装完了基準
+
 ```yaml
 security_implementation_success_criteria:
   data_protection:
