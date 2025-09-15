@@ -301,61 +301,21 @@ end note
 title "7-Person Team Structure - Optimal Balance"
 
 package "Management Tier (3 people)" as MGT #LightBlue {
-  rectangle "Executive\n(1 person)" as EXEC #AliceBlue {
-    :Final Approvals
-    :Investment Decisions
-    :Risk Acceptance
-  }
-
-  rectangle "Technical Manager\n(1 person)" as TECH_MGR #LightCyan {
-    :Security Management
-    :Infrastructure Oversight
-    :Technical Approvals
-  }
-
-  rectangle "Business Manager\n(1 person)" as BIZ_MGR #LightCyan {
-    :Task Management
-    :Project Coordination
-    :Business Reporting
-  }
+  rectangle "Executive\n(1 person)" as EXEC #AliceBlue
+  rectangle "Technical Manager\n(1 person)" as TECH_MGR #LightCyan
+  rectangle "Business Manager\n(1 person)" as BIZ_MGR #LightCyan
 }
 
 package "Operations Tier (3 people)" as OPS #LightGreen {
-  rectangle "Senior Engineer\n(1 person)" as SENIOR #LightYellow {
-    :Complex Problem Solving
-    :System Design
-    :Technical Leadership
-  }
-
-  rectangle "Operations Engineer\n(1 person)" as OPS_ENG #LightYellow {
-    :Daily Operations
-    :Routine Maintenance
-    :System Monitoring
-  }
-
-  rectangle "Development Engineer\n(1 person)" as DEV_ENG #LightYellow {
-    :Automation Development
-    :Customization
-    :Test Environment
-  }
+  rectangle "Senior Engineer\n(1 person)" as SENIOR #LightYellow
+  rectangle "Operations Engineer\n(1 person)" as OPS_ENG #LightYellow
+  rectangle "Development Engineer\n(1 person)" as DEV_ENG #LightYellow
 }
 
 package "Compliance Tier (1 person)" as COMP #LightPink {
-  rectangle "Auditor\n(1 person)" as AUDITOR #MistyRose {
-    :Audit Trail Review
-    :Compliance Verification
-    :Regulatory Response
-  }
+  rectangle "Auditor\n(1 person)" as AUDITOR #MistyRose
 }
 
-' Workload distribution
-EXEC : 10% technical, 90% business
-TECH_MGR : 70% technical, 30% management
-BIZ_MGR : 20% technical, 80% management
-SENIOR : 90% technical, 10% leadership
-OPS_ENG : 95% technical, 5% coordination
-DEV_ENG : 95% technical, 5% coordination
-AUDITOR : 5% technical, 95% compliance
 
 ' Escalation paths
 OPS_ENG --> TECH_MGR : technical escalation
@@ -389,6 +349,25 @@ end note
 @enduml
 ```
 
+### ワークロード分担・責任詳細
+
+| 役割 | 技術作業割合 | 管理・業務割合 | 主要責任 |
+|------|-------------|---------------|----------|
+| **Executive** | 10% | 90% | • 最終承認・投資判断<br>• リスク受容決定<br>• 経営レベル情報確認 |
+| **Technical Manager** | 70% | 30% | • セキュリティ管理<br>• インフラ監督<br>• 技術承認 |
+| **Business Manager** | 20% | 80% | • タスク管理<br>• プロジェクト調整<br>• ビジネス報告 |
+| **Senior Engineer** | 90% | 10% | • 複雑技術課題解決<br>• システム設計<br>• 技術リーダーシップ |
+| **Operations Engineer** | 95% | 5% | • 日常運用・監視<br>• ルーチン保守<br>• システムモニタリング |
+| **Development Engineer** | 95% | 5% | • 自動化開発<br>• カスタマイズ<br>• テスト環境管理 |
+| **Auditor** | 5% | 95% | • 監査証跡確認<br>• コンプライアンス検証<br>• 規制対応 |
+
+### 効率化のポイント
+
+- **技術専門性の最大活用**: Engineers（90-95%技術）→ 深い技術問題解決
+- **管理効率の最適化**: Managers（20-70%技術）→ 技術理解を持った意思決定
+- **経営判断の迅速化**: Executive（10%技術）→ ビジネス観点での最終決定
+- **監査独立性の確保**: Auditor（5%技術）→ 客観的なコンプライアンス確認
+
 ---
 
 ## 自動化による効率化レベル
@@ -398,58 +377,58 @@ end note
 !theme plain
 title "Automation Levels for Efficiency"
 
-rectangle "Level 1: Full Automation\n(0% human intervention)" as L1 #LightGreen {
-  :Vulnerability Scanning
-  :CVSS Score Assignment
-  :Urgent Task Creation (CVSS 9.0+)
-  :Compliance Report Generation
-  :EOL Warnings
-
-  note right
-    60% workload reduction
-    24/7 operation
-    Immediate response
-  end note
+package "Level 1: Full Automation\n(0% human intervention)" as L1 #LightGreen {
+  [Vulnerability Scanning]
+  [CVSS Score Assignment]
+  [Urgent Task Creation (CVSS 9.0+)]
+  [Compliance Report Generation]
+  [EOL Warnings]
 }
 
-rectangle "Level 2: Semi-Automation\n(30% human intervention)" as L2 #LightYellow {
-  :Security Patch Application
-  :System Configuration Changes
-  :Impact Analysis
-  :Risk Assessment Preparation
+note right of L1
+  60% workload reduction
+  24/7 operation
+  Immediate response
+end note
 
-  note right
-    40% workload reduction
-    Human approval required
-    Quality assurance maintained
-  end note
+package "Level 2: Semi-Automation\n(30% human intervention)" as L2 #LightYellow {
+  [Security Patch Application]
+  [System Configuration Changes]
+  [Impact Analysis]
+  [Risk Assessment Preparation]
 }
 
-rectangle "Level 3: Assisted Operations\n(50% human intervention)" as L3 #LightBlue {
-  :Migration Plan Development
-  :Resource Scaling Decisions
-  :Complex Problem Diagnosis
-  :Strategic Planning
+note right of L2
+  40% workload reduction
+  Human approval required
+  Quality assurance maintained
+end note
 
-  note right
-    30% workload reduction
-    AI-assisted decision making
-    Human expertise essential
-  end note
+package "Level 3: Assisted Operations\n(50% human intervention)" as L3 #LightBlue {
+  [Migration Plan Development]
+  [Resource Scaling Decisions]
+  [Complex Problem Diagnosis]
+  [Strategic Planning]
 }
 
-rectangle "Level 4: Manual Operations\n(100% human intervention)" as L4 #LightCoral {
-  :Executive Decisions
-  :Risk Acceptance
-  :Vendor Negotiations
-  :Compliance Interpretation
+note right of L3
+  30% workload reduction
+  AI-assisted decision making
+  Human expertise essential
+end note
 
-  note right
-    Critical thinking required
-    Regulatory compliance
-    Business judgment essential
-  end note
+package "Level 4: Manual Operations\n(100% human intervention)" as L4 #LightCoral {
+  [Executive Decisions]
+  [Risk Acceptance]
+  [Vendor Negotiations]
+  [Compliance Interpretation]
 }
+
+note right of L4
+  Critical thinking required
+  Regulatory compliance
+  Business judgment essential
+end note
 
 ' Flow between levels
 L1 --> L2 : escalation if needed
@@ -462,12 +441,14 @@ L3 -[#dashed]-> L2 : process improvements
 L2 -[#dashed]-> L1 : automation enhancements
 
 ' Performance metrics
-cloud "Performance Metrics" as METRICS {
-  :Response Time Reduction: 70%
-  :Error Rate Reduction: 80%
-  :Resource Utilization: +150%
-  :User Satisfaction: +90%
-}
+cloud "Performance Metrics" as METRICS #LightGray
+
+note bottom of METRICS
+  Response Time Reduction: 70%
+  Error Rate Reduction: 80%
+  Resource Utilization: +150%
+  User Satisfaction: +90%
+end note
 
 L1 --> METRICS
 L2 --> METRICS
@@ -482,4 +463,4 @@ L4 --> METRICS
 **作成者**: UX Design Optimizer
 **完成日**: 2025年9月15日
 **対象プロジェクト**: System Board Human Actors分析
-**参照**: `/workspaces/system-board/docs/event-storming/human-actors-responsibility-matrix.md`
+**参照**: `/docs/event-storming/human-actors-responsibility-matrix.md`

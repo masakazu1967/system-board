@@ -108,13 +108,13 @@
 
 - **責任範囲**: 日常運用・保守、脆弱性対応、タスク実行
 - **実行可能Commands**: RegisterSystem, ApplySecurityPatch, ViewDashboard
-- **勤務形態**: 平日9:00-18:00、オンコール週次ローテーション
+- **勤務形態**: 平日8:00-17:00、オンコール週次ローテーション
 
 **Security Manager（情報システム管理者）**:
 
 - **責任範囲**: 管理・意思決定、タスク割当・承認、リスク評価
 - **実行可能Commands**: EscalateTask, ApproveRiskMitigation, GenerateComplianceReport
-- **勤務形態**: 平日9:00-18:00、緊急時24時間対応
+- **勤務形態**: 平日8:00-17:00、緊急時24時間対応
 
 **Executive（経営陣）**:
 

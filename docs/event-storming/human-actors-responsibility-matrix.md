@@ -10,46 +10,38 @@
 
 | コマンド分類 | コマンド名 | 情報システム担当者 | 情報システム管理者 | 経営陣 | 監査部門 |
 |------------|-----------|-----------------|-----------------|-------|---------|
-
-### システム管理コマンド
-
-| RegisterSystem | ✅ **実行** | ✅ **承認** | ❌ | ❌ |
-| UpdateSystemConfiguration | ✅ **実行** | ✅ **承認** | ❌ | ❌ |
-| DecommissionSystem | ❌ | ✅ **起案** | ✅ **最終承認** | 📝 **記録確認** |
-| ScaleHostResources | ✅ **実行** | ✅ **承認** | 💰 **予算承認** | ❌ |
-| InstallPackage | ✅ **実行** | ✅ **承認** | ❌ | ❌ |
-| UpdatePackage | ✅ **実行** | ✅ **承認** | ❌ | ❌ |
-| ScheduleSystemMaintenance | ✅ **計画・実行** | ✅ **承認** | ❌ | ❌ |
-| ValidateSystemHealth | ✅ **実行** | 📊 **結果確認** | ❌ | ❌ |
-
-### タスク管理コマンド
-
-| CreateTask | ✅ **実行** | ✅ **実行** | ❌ | ❌ |
-| AssignTaskToSelf | ✅ **実行** | ✅ **実行** | ❌ | ❌ |
-| AssignTaskToOthers | ❌ | ✅ **実行** | ✅ **重要タスク** | ❌ |
-| UpdateTaskStatus | ✅ **実行** | ✅ **実行** | ❌ | ❌ |
-| CompleteTask | ✅ **実行** | ✅ **確認** | ❌ | ❌ |
-| EscalateTask | ✅ **起案** | ✅ **判断** | ✅ **最終判断** | ❌ |
-| CreateUrgentTask | 🤖 **自動生成** | ✅ **確認** | 📢 **通知受信** | ❌ |
-| ApproveTaskCompletion | ❌ | ✅ **実行** | ✅ **重要タスク** | ❌ |
-
-### セキュリティコマンド
-
-| ApplySecurityPatch | ✅ **実行** | ✅ **承認** | ❌ | 📝 **記録確認** |
-| AssessRisk | ✅ **初期評価** | ✅ **最終評価** | 📊 **重要リスク確認** | ❌ |
-| ApproveRiskMitigation | ❌ | ✅ **実行** | ✅ **高リスク承認** | 📝 **記録確認** |
-| ApproveRiskAcceptance | ❌ | ❌ | ✅ **実行** | 📝 **記録確認** |
-| ScanVulnerabilities | 🤖 **自動実行** | 📊 **結果確認** | 📊 **サマリー確認** | ❌ |
-| ProcessVulnerabilityDetection | 🤖 **自動処理** | ✅ **重要度確認** | 📢 **重要通知受信** | ❌ |
-| ApproveMigrationPlan | ❌ | ✅ **技術承認** | ✅ **予算・スケジュール承認** | 📝 **記録確認** |
-
-### 報告・監査コマンド
-
-| GenerateComplianceReport | ❌ | ✅ **実行** | 📊 **確認** | ✅ **詳細確認** |
-| ViewAuditLog | ❌ | ✅ **管理目的** | ❌ | ✅ **監査目的** |
-| ReviewExecutiveDashboard | ❌ | 📊 **準備** | ✅ **確認** | 📊 **監査確認** |
-| GenerateVulnerabilityReport | ✅ **作成支援** | ✅ **実行** | 📊 **確認** | ❌ |
-| CreateWeeklyReport | ✅ **データ準備** | ✅ **実行** | 📊 **確認** | ❌ |
+|**システム管理コマンド**||||||
+|| RegisterSystem | ✅ **実行** | ✅ **承認** | ❌ | ❌ |
+|| UpdateSystemConfiguration | ✅ **実行** | ✅ **承認** | ❌ | ❌ |
+|| DecommissionSystem | ❌ | ✅ **起案** | ✅ **最終承認** | 📝 **記録確認** |
+|| ScaleHostResources | ✅ **実行** | ✅ **承認** | 💰 **予算承認** | ❌ |
+|| InstallPackage | ✅ **実行** | ✅ **承認** | ❌ | ❌ |
+|| UpdatePackage | ✅ **実行** | ✅ **承認** | ❌ | ❌ |
+|| ScheduleSystemMaintenance | ✅ **計画・実行** | ✅ **承認** | ❌ | ❌ |
+|| ValidateSystemHealth | ✅ **実行** | 📊 **結果確認** | ❌ | ❌ |
+|**タスク管理コマンド**||||||
+|| CreateTask | ✅ **実行** | ✅ **実行** | ❌ | ❌ |
+|| AssignTaskToSelf | ✅ **実行** | ✅ **実行** | ❌ | ❌ |
+|| AssignTaskToOthers | ❌ | ✅ **実行** | ✅ **重要タスク** | ❌ |
+|| UpdateTaskStatus | ✅ **実行** | ✅ **実行** | ❌ | ❌ |
+|| CompleteTask | ✅ **実行** | ✅ **確認** | ❌ | ❌ |
+|| EscalateTask | ✅ **起案** | ✅ **判断** | ✅ **最終判断** | ❌ |
+|| CreateUrgentTask | 🤖 **自動生成** | ✅ **確認** | 📢 **通知受信** | ❌ |
+|| ApproveTaskCompletion | ❌ | ✅ **実行** | ✅ **重要タスク** | ❌ |
+|**セキュリティコマンド**||||||
+|| ApplySecurityPatch | ✅ **実行** | ✅ **承認** | ❌ | 📝 **記録確認** |
+|| AssessRisk | ✅ **初期評価** | ✅ **最終評価** | 📊 **重要リスク確認** | ❌ |
+|| ApproveRiskMitigation | ❌ | ✅ **実行** | ✅ **高リスク承認** | 📝 **記録確認** |
+|| ApproveRiskAcceptance | ❌ | ❌ | ✅ **実行** | 📝 **記録確認** |
+|| ScanVulnerabilities | 🤖 **自動実行** | 📊 **結果確認** | 📊 **サマリー確認** | ❌ |
+|| ProcessVulnerabilityDetection | 🤖 **自動処理** | ✅ **重要度確認** | 📢 **重要通知受信** | ❌ |
+|| ApproveMigrationPlan | ❌ | ✅ **技術承認** | ✅ **予算・スケジュール承認** | 📝 **記録確認** |
+|**報告・監査コマンド**||||||
+|| GenerateComplianceReport | ❌ | ✅ **実行** | 📊 **確認** | ✅ **詳細確認** |
+|| ViewAuditLog | ❌ | ✅ **管理目的** | ❌ | ✅ **監査目的** |
+|| ReviewExecutiveDashboard | ❌ | 📊 **準備** | ✅ **確認** | 📊 **監査確認** |
+|| GenerateVulnerabilityReport | ✅ **作成支援** | ✅ **実行** | 📊 **確認** | ❌ |
+|| CreateWeeklyReport | ✅ **データ準備** | ✅ **実行** | 📊 **確認** | ❌ |
 
 ---
 
@@ -113,7 +105,7 @@
 
 ## エスカレーション経路設計
 
-### 2.1 通常時エスカレーション（営業時間内：平日 9:00-18:00）
+### 2.1 通常時エスカレーション（営業時間内：平日 8:00-17:00）
 
 #### レベル1: 日常的課題
 
@@ -143,7 +135,7 @@
 
 ### 2.2 業務時間外エスカレーション
 
-#### 平日夜間（18:00-9:00）
+#### 平日夜間（17:00-8:00）
 
 ```text
 自動検知システム → オンコール担当者（情報システム管理者） → 必要に応じて経営陣連絡
@@ -465,7 +457,7 @@ SMS + 電話 → 経営陣
 
 #### 平常時の業務分担（営業日）
 
-**9:00-12:00（午前の部）**:
+**8:00-12:00（午前の部）**:
 
 ```text
 技術管理者:
@@ -494,7 +486,7 @@ SMS + 電話 → 経営陣
 - テスト環境管理
 ```
 
-**13:00-18:00（午後の部）**:
+**13:00-17:00（午後の部）**:
 
 ```text
 技術管理者:
