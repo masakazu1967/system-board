@@ -72,9 +72,9 @@ pnpm build
 
 ### 3. Access Services
 
-- **Grafana**: http://localhost:3000 (admin/system-board-grafana-2025)
-- **Prometheus**: http://localhost:9090
-- **Loki API**: http://localhost:3100
+- **Grafana**: <http://localhost:3000> (admin/system-board-grafana-2025)
+- **Prometheus**: <http://localhost:9090>
+- **Loki API**: <http://localhost:3100>
 
 ### 4. Test Integration
 
@@ -255,6 +255,7 @@ Configured in `config/prometheus/prometheus.yml`:
 ### Common Issues
 
 1. **Loki not starting**
+
    ```bash
    # Check configuration syntax
    docker logs system-board-loki
@@ -265,6 +266,7 @@ Configured in `config/prometheus/prometheus.yml`:
    ```
 
 2. **No logs appearing**
+
    ```bash
    # Check Promtail logs
    docker logs system-board-promtail
