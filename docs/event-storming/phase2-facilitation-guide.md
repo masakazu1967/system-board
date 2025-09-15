@@ -13,31 +13,31 @@
 
 ### 1.1 Phase 1成果物レビュー
 
-- [ ] `/docs/event-storming/phase1-domain-events.md` の全ドメインイベント把握
-- [ ] 時系列関係・因果関係の理解
-- [ ] Hotspots & Pain Points の把握
+- [x] `/docs/event-storming/phase1-domain-events.md` の全ドメインイベント把握
+- [x] 時系列関係・因果関係の理解
+- [x] Hotspots & Pain Points の把握
 
 ### 1.2 技術実装観点準備
 
 **Backend System Architect**:
 
-- [ ] NestJSでのCommand Handler実装パターン検討完了
-- [ ] CQRS + Event Sourcingでのコマンド設計方針確立
-- [ ] DI（Dependency Injection）でのコマンド注入パターン整理
+- [x] NestJSでのCommand Handler実装パターン検討完了
+- [x] CQRS + Event Sourcingでのコマンド設計方針確立
+- [x] DI（Dependency Injection）でのコマンド注入パターン整理
 
 ### 1.3 セキュリティ観点準備
 
 **Cybersecurity Advisor**:
 
-- [ ] OAuth2.0 + JWT実装要件整理
-- [ ] RBAC（Role-Based Access Control）設計方針確立
-- [ ] 監査ログ要件（5年間保持）への対応方針
+- [x] OAuth2.0 + JWT実装要件整理
+- [x] RBAC（Role-Based Access Control）設計方針確立
+- [x] 監査ログ要件（5年間保持）への対応方針
 
 ### 1.4 参画エージェント準備確認
 
-- [ ] **Requirements Analyst**: ビジネス要件からのアクター抽出準備
-- [ ] **UX Design Optimizer**: エンドユーザー体験からのコマンド導出準備
-- [ ] **Software Architecture Advisor**: システム境界・技術制約確認準備
+- [x] **Requirements Analyst**: ビジネス要件からのアクター抽出準備
+- [x] **UX Design Optimizer**: エンドユーザー体験からのコマンド導出準備
+- [x] **Software Architecture Advisor**: システム境界・技術制約確認準備
 
 ---
 
@@ -579,21 +579,21 @@ BR --> PostC : execution completed
 
 **完全性チェック**:
 
-- [ ] 全てのPhase 1イベントにトリガーとなるコマンドが定義されている
-- [ ] Human/System/External の3種類アクターが適切に分類されている
-- [ ] 権限・認証要件が各コマンドに定義されている
+- [x] 全てのPhase 1イベントにトリガーとなるコマンドが定義されている
+- [x] Human/System/External の3種類アクターが適切に分類されている
+- [x] 権限・認証要件が各コマンドに定義されている
 
 **整合性チェック**:
 
-- [ ] コマンド名が命令形で統一されている
-- [ ] アクターの責任範囲に重複・漏れがない
-- [ ] セキュリティ要件が適切に反映されている
+- [x] コマンド名が命令形で統一されている
+- [x] アクターの責任範囲に重複・漏れがない
+- [x] セキュリティ要件が適切に反映されている
 
 **実装可能性チェック**:
 
-- [ ] NestJS + TypeScriptでの実装が技術的に可能
-- [ ] OAuth2.0 + JWT + MFAの実装が現実的
-- [ ] Event Sourcing Commandハンドラー設計が適切
+- [x] NestJS + TypeScriptでの実装が技術的に可能
+- [x] OAuth2.0 + JWT + MFAの実装が現実的
+- [x] Event Sourcing Commandハンドラー設計が適切
 
 ### 7.2 Phase 3への引き継ぎ事項
 
@@ -716,12 +716,12 @@ end note
 
 ### 8.2 完了条件チェック
 
-- [ ] 全てのドメインイベントにトリガーとなるコマンドが定義されている
-- [ ] アクターが適切に分類されている（人間/システム/外部）
-- [ ] 権限・認証要件が各コマンドに定義されている
-- [ ] セキュリティ関連コマンドが適切に特定・保護されている
-- [ ] コマンド実行の事前条件・事後条件が明確化されている
-- [ ] RBAC権限マトリックスが作成されている
+- [x] 全てのドメインイベントにトリガーとなるコマンドが定義されている
+- [x] アクターが適切に分類されている（人間/システム/外部）
+- [x] 権限・認証要件が各コマンドに定義されている
+- [x] セキュリティ関連コマンドが適切に特定・保護されている
+- [x] コマンド実行の事前条件・事後条件が明確化されている
+- [x] RBAC権限マトリックスが作成されている
 
 ### 8.3 Phase 3準備事項
 
