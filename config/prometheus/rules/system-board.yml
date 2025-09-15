@@ -1,0 +1,45 @@
+groups:
+  - name: system-board.recording
+    rules:
+      # Log ingestion rate
+      - record: system_board:log_ingestion_rate
+        expr: rate(loki_distributor_lines_received_total[5m])
+
+      # Loki query duration
+      - record: system_board:loki_query_duration_99p
+        expr: histogram_quantile(0.99, rate(loki_request_duration_seconds_bucket[5m]))
+
+  - name: system-board.alerts
+    rules:
+      # Loki ingestion problems
+      - alert: LokiIngestionDown
+        expr: up{job="loki"} == 0
+        for: 1m
+        labels:
+          severity: critical
+          service: loki
+        annotations:
+          summary: "Loki ingestion is down"
+          description: "Loki has been down for more than 1 minute"
+
+      # High query latency
+      - alert: LokiHighQueryLatency
+        expr: histogram_quantile(0.99, rate(loki_request_duration_seconds_bucket[5m])) > 5
+        for: 2m
+        labels:
+          severity: warning
+          service: loki
+        annotations:
+          summary: "Loki queries are slow"
+          description: "99th percentile query latency is {{ $value }}s"
+
+      # Low ingestion rate (indicates potential issues)
+      - alert: LokiLowIngestionRate
+        expr: rate(loki_distributor_lines_received_total[5m]) < 0.1
+        for: 10m
+        labels:
+          severity: warning
+          service: loki
+        annotations:
+          summary: "Loki ingestion rate is very low"
+          description: "Log ingestion rate is {{ $value }} lines/sec, which may indicate connectivity issues"
