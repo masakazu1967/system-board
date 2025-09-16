@@ -41,7 +41,7 @@ export class DataMasker {
   /**
    * Mask sensitive patterns in strings
    */
-  private maskString(input: string): string {
+  public maskString(input: string): string {
     let masked = input;
 
     // Password patterns

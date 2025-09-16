@@ -412,7 +412,9 @@ export class StructuredLogger {
    */
   async close(): Promise<void> {
     return new Promise((resolve) => {
-      this.logger.close(() => resolve());
+      // Winston logger close method doesn't accept callback in newer versions
+      this.logger.close();
+      resolve();
     });
   }
 }

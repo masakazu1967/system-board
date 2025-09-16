@@ -1,6 +1,14 @@
 import { Injectable, Inject, LoggerService, Scope } from '@nestjs/common';
 import { REQUEST } from '@nestjs/core';
-import { Request } from 'express';
+// Using generic request interface instead of express
+interface Request {
+  headers: Record<string, string | string[]>;
+  method?: string;
+  url?: string;
+  ip?: string;
+  connection?: { remoteAddress?: string };
+  socket?: { remoteAddress?: string };
+}
 
 import { StructuredLogger } from './structured-logger';
 import { LogConfig, ContextType, ServiceType, Environment } from './types';
@@ -13,10 +21,10 @@ export class SystemBoardLoggerService implements LoggerService {
   private logger: StructuredLogger;
   private requestId: string;
 
-  constructor(@Inject(REQUEST) private readonly request: Request) {
+  constructor(@Inject(REQUEST) private readonly request?: Request) {
     // Extract request ID from headers or generate one
-    this.requestId = (request.headers['x-request-id'] as string) ||
-                     (request as any).id ||
+    this.requestId = request?.headers?.['x-request-id'] as string ||
+                     (request as any)?.id ||
                      `req_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
 
     // Get service configuration from environment
@@ -32,7 +40,11 @@ export class SystemBoardLoggerService implements LoggerService {
       maskSensitiveData: process.env.MASK_SENSITIVE_DATA !== 'false',
       labels: {
         requestId: this.requestId,
-        userAgent: request.headers['user-agent'] || 'unknown',
+        userAgent: request?.headers?.['user-agent']
+          ? (Array.isArray(request.headers['user-agent'])
+            ? request.headers['user-agent'][0]
+            : request.headers['user-agent'])
+          : 'unknown',
       },
     };
 
@@ -291,10 +303,12 @@ export class SystemBoardLoggerService implements LoggerService {
    * Get client IP address from request
    */
   private getClientIp(): string {
+    if (!this.request) return 'unknown';
+
     return (
       this.request.ip ||
-      this.request.connection.remoteAddress ||
-      this.request.socket.remoteAddress ||
+      this.request.connection?.remoteAddress ||
+      this.request.socket?.remoteAddress ||
       'unknown'
     );
   }
@@ -336,21 +350,30 @@ export function LogPerformance(operation?: string, threshold?: number) {
     const method = descriptor.value;
 
     descriptor.value = async function (...args: any[]) {
-      const logger: SystemBoardLoggerService = this.logger || new SystemBoardLoggerService({} as any);
       const operationName = operation || `${target.constructor.name}.${propertyName}`;
+
+      // Try to get logger from this context, or create simple logger
+      let logger: SystemBoardLoggerService;
+      try {
+        logger = (this as any).logger || new SystemBoardLoggerService(undefined);
+      } catch {
+        // Fallback to console logging if NestJS context is not available
+        console.log(`Performance: ${operationName}`);
+        return await method.apply(this, args);
+      }
       const startTime = Date.now();
 
       try {
         const result = await method.apply(this, args);
         const duration = Date.now() - startTime;
 
-        logger.logPerformance(operationName, duration, true, threshold);
+        logger.logPerformance(operationName, duration, true);
         return result;
       } catch (error) {
         const duration = Date.now() - startTime;
 
-        logger.logPerformance(operationName, duration, false, threshold);
-        logger.error(`Performance logging failed for ${operationName}`, error as Error);
+        logger.logPerformance(operationName, duration, false);
+        logger.error(`Performance logging failed for ${operationName}`, error as string);
         throw error;
       }
     };
@@ -367,19 +390,26 @@ export function LogAudit(action: string, resource: string) {
     const method = descriptor.value;
 
     descriptor.value = async function (...args: any[]) {
-      const logger: SystemBoardLoggerService = this.logger || new SystemBoardLoggerService({} as any);
+      let logger: SystemBoardLoggerService;
+      try {
+        logger = (this as any).logger || new SystemBoardLoggerService(undefined);
+      } catch {
+        // Fallback to console logging if NestJS context is not available
+        console.log(`Audit: ${action} ${resource}`);
+        return await method.apply(this, args);
+      }
 
       try {
         const result = await method.apply(this, args);
 
         // Extract actor and resource ID from context or args
-        const actor = this.currentUser?.id || 'system';
+        const actor = (this as any).currentUser?.id || 'system';
         const resourceId = args[0]?.id || 'unknown';
 
         logger.logAudit(actor, action, resource, resourceId, 'success');
         return result;
       } catch (error) {
-        const actor = this.currentUser?.id || 'system';
+        const actor = (this as any).currentUser?.id || 'system';
         const resourceId = args[0]?.id || 'unknown';
 
         logger.logAudit(actor, action, resource, resourceId, 'failure', {
