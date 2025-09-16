@@ -23,9 +23,34 @@ export type ServiceType =
   | 'system';
 
 /**
+ * Service type enum for easier usage
+ */
+export const ServiceType = {
+  FRONTEND: 'frontend' as const,
+  BACKEND: 'backend' as const,
+  DATABASE: 'database' as const,
+  EVENTSTORE: 'eventstore' as const,
+  KAFKA: 'kafka' as const,
+  REDIS: 'redis' as const,
+  EXTERNAL_API: 'external-api' as const,
+  AUTH: 'auth' as const,
+  SYSTEM: 'system' as const,
+};
+
+/**
  * Environment types
  */
 export type Environment = 'development' | 'test' | 'staging' | 'production';
+
+/**
+ * Environment enum for easier usage
+ */
+export const Environment = {
+  DEVELOPMENT: 'development' as const,
+  TEST: 'test' as const,
+  STAGING: 'staging' as const,
+  PRODUCTION: 'production' as const,
+};
 
 /**
  * Context types for different areas of the application

@@ -47,7 +47,7 @@ export class DataMasker {
     // Password patterns
     if (this.config.enablePiiMasking) {
       masked = masked.replace(
-        /(?i)(password|passwd|pwd|secret|token|key|api_key|access_token|refresh_token|jwt)["\s]*[:=]["\s]*([^\s"]+)/g,
+        /(password|passwd|pwd|secret|token|key|api_key|access_token|refresh_token|jwt)["\s]*[:=]["\s]*([^\s"]+)/gi,
         '$1="[REDACTED]"'
       );
     }
@@ -102,7 +102,7 @@ export class DataMasker {
 
     // Manufacturing-specific confidential patterns
     masked = masked.replace(
-      /(?i)(internal|confidential|proprietary|classified|trade[-_]?secret)/g,
+      /(internal|confidential|proprietary|classified|trade[-_]?secret)/gi,
       '[CONFIDENTIAL_REDACTED]'
     );
 
@@ -256,7 +256,7 @@ export class DataMasker {
    */
   containsSensitiveData(data: string): boolean {
     const sensitivePatterns = [
-      /(?i)(password|secret|token|key)/,
+      /(password|secret|token|key)/i,
       /[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}/,
       /\b(?:\d{4}[-\s]?){3}\d{4}\b/,
       /\b\d{3}-?\d{2}-?\d{4}\b/,
