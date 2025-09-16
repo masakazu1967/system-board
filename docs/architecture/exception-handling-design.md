@@ -31,7 +31,7 @@ Phase 2で特定された以下のコマンド群を対象とします：
 ### 1.3 技術基盤
 
 - **NestJS + TypeScript**: 型安全な例外処理
-- **Hexagonal Architecture**: ドメイン例外とインフラ例外の分離
+- **Onion Architecture**: ドメイン例外とインフラ例外の分離
 - **CQRS + Event Sourcing**: コマンド実行時の一貫性保証
 - **OAuth2.0 + JWT**: 認証・認可関連エラーハンドリング
 
@@ -1699,7 +1699,7 @@ describe('Circuit Breaker', () => {
 本設計はPhase 3「ビジネスルール・ポリシー実装」での実装準備が完了しています：
 
 - **型安全性**: TypeScriptによる型安全な例外処理
-- **アーキテクチャ整合性**: Hexagonal Architectureとの適合
+- **アーキテクチャ整合性**: Onion Architectureとの適合
 - **セキュリティ要件**: 製造業コンプライアンス要件への対応
 - **運用要件**: 監視・アラート・監査ログの包括的な設計
 

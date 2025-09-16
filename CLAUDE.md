@@ -44,9 +44,10 @@ turbo format
 
 ### High-Level Architecture
 
-- **Pattern**: Hexagonal Architecture + Domain-Driven Design (DDD)
+- **Pattern**: Onion Architecture + Domain-Driven Design (DDD)
 - **Data**: CQRS + Event Sourcing
 - **Communication**: Event-driven architecture with staged migration (REST API → gRPC)
+- **Evolution**: Modular Monolith → Staged Microservices migration
 
 ### Technology Stack
 
@@ -57,7 +58,8 @@ turbo format
 **Backend**:
 
 - NestJS (TypeScript unified, Express-based)
-- Hexagonal Architecture + DDD implementation
+- Onion Architecture + DDD implementation
+- Modular Monolith → Staged Microservices migration
 
 **Data Layer**:
 
@@ -79,8 +81,11 @@ turbo format
 
 **Monitoring & Operations**:
 
-- Prometheus + Grafana (metrics)
-- ELK Stack (logging)
+- Self-hosted monitoring stack:
+  - GlitchTip (error tracking)
+  - Jaeger + OpenTelemetry (distributed tracing)
+  - Prometheus + Grafana (metrics)
+  - Enhanced ELK Stack (logging)
 - Microsoft Teams (alerts/escalation)
 
 ### System Domain Structure
@@ -126,9 +131,13 @@ This project uses specialized AI agents for different aspects:
 
 ```text
 apps/
-├── frontend/    # React applications
-├── backend/     # NestJS applications  
-└── packages/    # Shared packages
+├── frontend/           # React applications
+├── backend/           # NestJS applications (Modular Monolith)
+│   ├── system-mgmt/   # System Management Context
+│   ├── task-mgmt/     # Task Management Context
+│   ├── vuln-mgmt/     # Vulnerability Management Context
+│   └── relation-mgmt/ # Relationship Management Context
+└── packages/          # Shared packages
 ```
 
 ### Quality Standards
@@ -137,7 +146,7 @@ apps/
 - **Security**: OWASP Top 10 compliance mandatory
 - **Performance**: Response time <2 seconds
 - **Code Review**: Security Engineer approval required for all PRs
-- **Architecture**: Hexagonal Architecture principles with clean separation of concerns
+- **Architecture**: Onion Architecture principles with clean separation of concerns
 
 ### External Integrations
 

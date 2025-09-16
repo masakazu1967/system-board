@@ -43,7 +43,7 @@ Phase 2で特定された以下のコマンド群を対象とします：
 
 - **NestJS + TypeScript**: フレームワーク固有のテスト手法とモック戦略
 - **CQRS + Event Sourcing**: イベント整合性とコマンド実行時の例外処理テスト
-- **Hexagonal Architecture**: ドメイン例外とインフラ例外の分離テスト
+- **Onion Architecture**: ドメイン例外とインフラ例外の分離テスト
 - **OAuth2.0 + JWT**: 認証・認可関連エラーの包括的テスト
 
 ---
@@ -1805,7 +1805,7 @@ export default {
 
 - **NestJS + TypeScript**: フレームワーク固有のテスト手法を活用
 - **CQRS + Event Sourcing**: イベント整合性の包括的検証
-- **Hexagonal Architecture**: レイヤー分離による効果的なテスト戦略
+- **Onion Architecture**: レイヤー分離による効果的なテスト戦略
 - **CI/CD統合**: GitHub Actionsでの自動化テスト実行
 
 ### 11.3 Phase 3実装準備完了
