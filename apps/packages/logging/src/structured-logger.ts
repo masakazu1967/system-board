@@ -6,10 +6,7 @@ import {
   StructuredLogEntry,
   LogConfig,
   LogLevel,
-  ServiceType,
-  Environment,
   ContextType,
-  ErrorCategory,
   VulnerabilityLogEntry,
   AuditLogEntry,
   PerformanceMetrics,
@@ -23,8 +20,8 @@ import { DataMasker } from './data-masker';
 export class StructuredLogger {
   private logger: winston.Logger;
   private config: LogConfig;
-  private errorIdGenerator: ErrorIdGenerator;
-  private dataMasker: DataMasker;
+  private readonly errorIdGenerator: ErrorIdGenerator;
+  private readonly dataMasker: DataMasker;
 
   constructor(config: LogConfig) {
     this.config = config;
@@ -51,11 +48,13 @@ export class StructuredLogger {
             winston.format.timestamp(),
             winston.format.colorize(),
             winston.format.printf(({ timestamp, level, message, ...meta }) => {
-              const metaStr = Object.keys(meta).length ? JSON.stringify(meta, null, 2) : '';
-              return `${timestamp} [${level}]: ${message} ${metaStr}`;
-            })
+              const metaStr = Object.keys(meta).length
+                ? JSON.stringify(meta, null, 2)
+                : '';
+              return `${String(timestamp)} [${String(level)}]: ${String(message)} ${metaStr}`;
+            }),
           ),
-        })
+        }),
       );
     }
 
@@ -66,9 +65,9 @@ export class StructuredLogger {
           filename: this.config.filePath,
           format: winston.format.combine(
             winston.format.timestamp(),
-            winston.format.json()
+            winston.format.json(),
           ),
-        })
+        }),
       );
     }
 
@@ -88,7 +87,7 @@ export class StructuredLogger {
           onConnectionError: (err) => {
             console.error('Loki connection error:', err);
           },
-        })
+        }),
       );
     }
 
@@ -108,12 +107,14 @@ export class StructuredLogger {
   private createLogEntry(
     level: LogLevel,
     message: string,
-    metadata: Partial<StructuredLogEntry> = {}
+    metadata: Partial<StructuredLogEntry> = {},
   ): StructuredLogEntry {
     const entry: StructuredLogEntry = {
       timestamp: new Date().toISOString(),
       level,
-      message: this.config.maskSensitiveData ? this.dataMasker.maskString(message) : message,
+      message: this.config.maskSensitiveData
+        ? this.dataMasker.maskString(message)
+        : message,
       error_id: '',
       service: this.config.service,
       environment: this.config.environment,
@@ -128,7 +129,9 @@ export class StructuredLogger {
 
     // Mask sensitive data in metadata
     if (this.config.maskSensitiveData && entry.metadata) {
-      entry.metadata = this.dataMasker.maskSensitiveData(entry.metadata);
+      entry.metadata = this.dataMasker.maskSensitiveData(
+        entry.metadata,
+      ) as Record<string, unknown>;
     }
 
     // Mask stack trace
@@ -157,7 +160,7 @@ export class StructuredLogger {
   error(
     message: string,
     error?: Error,
-    metadata: Partial<StructuredLogEntry> = {}
+    metadata: Partial<StructuredLogEntry> = {},
   ): void {
     const entry = this.createLogEntry('error', message, {
       ...metadata,
@@ -171,10 +174,7 @@ export class StructuredLogger {
   /**
    * Log a warning
    */
-  warn(
-    message: string,
-    metadata: Partial<StructuredLogEntry> = {}
-  ): void {
+  warn(message: string, metadata: Partial<StructuredLogEntry> = {}): void {
     const entry = this.createLogEntry('warn', message, metadata);
     this.logger.warn(entry);
   }
@@ -182,10 +182,7 @@ export class StructuredLogger {
   /**
    * Log an info message
    */
-  info(
-    message: string,
-    metadata: Partial<StructuredLogEntry> = {}
-  ): void {
+  info(message: string, metadata: Partial<StructuredLogEntry> = {}): void {
     const entry = this.createLogEntry('info', message, metadata);
     this.logger.info(entry);
   }
@@ -193,10 +190,7 @@ export class StructuredLogger {
   /**
    * Log a debug message
    */
-  debug(
-    message: string,
-    metadata: Partial<StructuredLogEntry> = {}
-  ): void {
+  debug(message: string, metadata: Partial<StructuredLogEntry> = {}): void {
     const entry = this.createLogEntry('debug', message, metadata);
     this.logger.debug(entry);
   }
@@ -204,10 +198,7 @@ export class StructuredLogger {
   /**
    * Log a verbose message
    */
-  verbose(
-    message: string,
-    metadata: Partial<StructuredLogEntry> = {}
-  ): void {
+  verbose(message: string, metadata: Partial<StructuredLogEntry> = {}): void {
     const entry = this.createLogEntry('verbose', message, metadata);
     this.logger.verbose(entry);
   }
@@ -221,7 +212,7 @@ export class StructuredLogger {
     packageVersion: string,
     severity: 'critical' | 'high' | 'medium' | 'low' | 'info',
     cvssScore: number,
-    metadata: Partial<VulnerabilityLogEntry> = {}
+    metadata: Partial<VulnerabilityLogEntry> = {},
   ): void {
     const entry: VulnerabilityLogEntry = {
       ...this.createLogEntry('error', `Vulnerability detected: ${cveId}`, {
@@ -243,7 +234,7 @@ export class StructuredLogger {
     entry.error_id = this.errorIdGenerator.generateVulnerabilityErrorId(
       cveId,
       packageName,
-      severity
+      severity,
     );
 
     this.logger.error(entry);
@@ -258,20 +249,25 @@ export class StructuredLogger {
     resource: string,
     resourceId: string,
     result: 'success' | 'failure' | 'partial',
-    metadata: Partial<AuditLogEntry> = {}
+    metadata: Partial<AuditLogEntry> = {},
   ): void {
     const entry: AuditLogEntry = {
       ...this.createLogEntry('info', `Audit: ${actor} ${action} ${resource}`, {
         context: 'security',
         ...metadata,
       }),
-      actor: this.config.maskSensitiveData ? this.dataMasker.maskString(actor) : actor,
+      actor: this.config.maskSensitiveData
+        ? this.dataMasker.maskString(actor)
+        : actor,
       action,
       resource,
       resource_id: resourceId,
       result,
       audit_metadata: this.config.maskSensitiveData
-        ? this.dataMasker.maskSensitiveData(metadata.audit_metadata)
+        ? (this.dataMasker.maskSensitiveData(metadata.audit_metadata) as Record<
+            string,
+            unknown
+          >)
         : metadata.audit_metadata,
     };
 
@@ -284,7 +280,7 @@ export class StructuredLogger {
   performance(
     operation: string,
     metrics: PerformanceMetrics,
-    threshold?: number
+    threshold?: number,
   ): void {
     const isSlowOperation = threshold ? metrics.duration > threshold : false;
     const level: LogLevel = isSlowOperation ? 'warn' : 'info';
@@ -301,7 +297,7 @@ export class StructuredLogger {
           threshold,
           ...metrics.metrics,
         },
-      }
+      },
     );
 
     // Generate performance error ID for slow operations
@@ -309,7 +305,7 @@ export class StructuredLogger {
       entry.error_id = this.errorIdGenerator.generatePerformanceErrorId(
         operation,
         threshold,
-        metrics.duration
+        metrics.duration,
       );
     }
 
@@ -324,21 +320,28 @@ export class StructuredLogger {
     path: string,
     statusCode: number,
     responseTime: number,
-    metadata: Partial<StructuredLogEntry> = {}
+    metadata: Partial<StructuredLogEntry> = {},
   ): void {
-    const level: LogLevel = statusCode >= 500 ? 'error' : statusCode >= 400 ? 'warn' : 'info';
+    let level: LogLevel;
+    if (statusCode >= 500) {
+      level = 'error';
+    } else if (statusCode >= 400) {
+      level = 'warn';
+    } else {
+      level = 'info';
+    }
 
     const entry = this.createLogEntry(
       level,
       `HTTP ${method} ${path} ${statusCode} - ${responseTime}ms`,
       {
-        http_method: method as any,
+        http_method: method as 'GET' | 'POST' | 'PUT' | 'DELETE' | 'PATCH',
         http_status: statusCode,
         url_path: path,
         response_time_ms: responseTime,
         context: 'authentication',
         ...metadata,
-      }
+      },
     );
 
     this.logger[level](entry);
@@ -351,30 +354,26 @@ export class StructuredLogger {
     event: string,
     severity: 'critical' | 'high' | 'medium' | 'low',
     resource: string,
-    metadata: Partial<StructuredLogEntry> = {}
+    metadata: Partial<StructuredLogEntry> = {},
   ): void {
     const level: LogLevel = severity === 'critical' ? 'error' : 'warn';
 
-    const entry = this.createLogEntry(
-      level,
-      `Security event: ${event}`,
-      {
-        context: 'security',
-        error_category: 'security-violation',
-        metadata: {
-          security_event: event,
-          severity,
-          resource,
-        },
-        ...metadata,
-      }
-    );
+    const entry = this.createLogEntry(level, `Security event: ${event}`, {
+      context: 'security',
+      error_category: 'security-violation',
+      metadata: {
+        security_event: event,
+        severity,
+        resource,
+      },
+      ...metadata,
+    });
 
     // Generate security-specific error ID
     entry.error_id = this.errorIdGenerator.generateSecurityErrorId(
       event,
       resource,
-      severity
+      severity,
     );
 
     this.logger[level](entry);
@@ -385,7 +384,7 @@ export class StructuredLogger {
    */
   child(
     context: ContextType,
-    additionalMetadata: Record<string, any> = {}
+    additionalMetadata: Record<string, unknown> = {},
   ): StructuredLogger {
     const childConfig: LogConfig = {
       ...this.config,

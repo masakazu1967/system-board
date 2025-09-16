@@ -22,17 +22,17 @@ export class DataMasker {
   /**
    * Mask sensitive data in log messages and metadata
    */
-  maskSensitiveData(data: any): any {
+  maskSensitiveData(data: unknown): unknown {
     if (typeof data === 'string') {
       return this.maskString(data);
     }
 
     if (Array.isArray(data)) {
-      return data.map(item => this.maskSensitiveData(item));
+      return data.map((item) => this.maskSensitiveData(item));
     }
 
     if (data && typeof data === 'object') {
-      return this.maskObject(data);
+      return this.maskObject(data as Record<string, unknown>);
     }
 
     return data;
@@ -48,7 +48,7 @@ export class DataMasker {
     if (this.config.enablePiiMasking) {
       masked = masked.replace(
         /(password|passwd|pwd|secret|token|key|api_key|access_token|refresh_token|jwt)["\s]*[:=]["\s]*([^\s"]+)/gi,
-        '$1="[REDACTED]"'
+        '$1="[REDACTED]"',
       );
     }
 
@@ -56,15 +56,15 @@ export class DataMasker {
     if (this.config.enableEmailMasking) {
       masked = masked.replace(
         /[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}/g,
-        '[EMAIL_REDACTED]'
+        '[EMAIL_REDACTED]',
       );
     }
 
     // IP addresses (preserve internal IPs)
     if (this.config.enableIpMasking) {
       masked = masked.replace(
-        /(?:(?!10\.|172\.(?:1[6-9]|2[0-9]|3[01])\.|192\.168\.)(?:[0-9]{1,3}\.){3}[0-9]{1,3})/g,
-        '[IP_REDACTED]'
+        /(?:(?!10\.|172\.(?:1[6-9]|2\d|3[01])\.|192\.168\.)(?:\d{1,3}\.){3}\d{1,3})/g,
+        '[IP_REDACTED]',
       );
     }
 
@@ -72,7 +72,7 @@ export class DataMasker {
     if (this.config.enablePiiMasking) {
       masked = masked.replace(
         /(postgresql|mysql|mongodb):\/\/([^:]+):([^@]+)@/g,
-        '$1://[USER]:[REDACTED]@'
+        '$1://[USER]:[REDACTED]@',
       );
     }
 
@@ -80,30 +80,27 @@ export class DataMasker {
     if (this.config.enablePiiMasking) {
       masked = masked.replace(
         /\b(?:\d{4}[-\s]?){3}\d{4}\b/g,
-        '[CARD_REDACTED]'
+        '[CARD_REDACTED]',
       );
     }
 
     // Social Security Numbers
     if (this.config.enablePiiMasking) {
-      masked = masked.replace(
-        /\b\d{3}-?\d{2}-?\d{4}\b/g,
-        '[SSN_REDACTED]'
-      );
+      masked = masked.replace(/\b\d{3}-?\d{2}-?\d{4}\b/g, '[SSN_REDACTED]');
     }
 
     // Phone numbers
     if (this.config.enablePiiMasking) {
       masked = masked.replace(
-        /\b(?:\+?1[-.\s]?)?\(?[0-9]{3}\)?[-.\s]?[0-9]{3}[-.\s]?[0-9]{4}\b/g,
-        '[PHONE_REDACTED]'
+        /\b(?:\+?1[-.\s]?)?\(?\d{3}\)?[-.\s]?\d{3}[-.\s]?\d{4}\b/g,
+        '[PHONE_REDACTED]',
       );
     }
 
     // Manufacturing-specific confidential patterns
     masked = masked.replace(
       /(internal|confidential|proprietary|classified|trade[-_]?secret)/gi,
-      '[CONFIDENTIAL_REDACTED]'
+      '[CONFIDENTIAL_REDACTED]',
     );
 
     // Custom masking patterns
@@ -117,14 +114,14 @@ export class DataMasker {
       const vulnerabilityTerms = [
         'cve-\\d{4}-\\d+',
         'cvss[\\s:]*[0-9.]+',
-        '(?i)(vulnerability|exploit|security[_-]?advisory)'
+        '(?i)(vulnerability|exploit|security[_-]?advisory)',
       ];
 
-      vulnerabilityTerms.forEach(term => {
+      vulnerabilityTerms.forEach((term) => {
         const regex = new RegExp(term, 'gi');
-        const matches = input.match(regex);
+        const matches = RegExp(regex).exec(input);
         if (matches) {
-          matches.forEach(match => {
+          matches.forEach((match) => {
             masked = masked.replace('[REDACTED]', match);
           });
         }
@@ -137,8 +134,8 @@ export class DataMasker {
   /**
    * Mask sensitive data in objects
    */
-  private maskObject(obj: Record<string, any>): Record<string, any> {
-    const masked: Record<string, any> = {};
+  private maskObject(obj: Record<string, unknown>): Record<string, unknown> {
+    const masked: Record<string, unknown> = {};
 
     for (const [key, value] of Object.entries(obj)) {
       const lowerKey = key.toLowerCase();
@@ -148,9 +145,10 @@ export class DataMasker {
         masked[key] = '[REDACTED]';
       } else if (lowerKey.includes('user_id') && this.config.enablePiiMasking) {
         // Mask user IDs but preserve format for debugging
-        masked[key] = typeof value === 'string'
-          ? `[USER_${value.substring(0, 4)}...]`
-          : '[USER_ID_REDACTED]';
+        masked[key] =
+          typeof value === 'string'
+            ? `[USER_${value.substring(0, 4)}...]`
+            : '[USER_ID_REDACTED]';
       } else {
         // Recursively mask nested data
         masked[key] = this.maskSensitiveData(value);
@@ -190,8 +188,10 @@ export class DataMasker {
       'routing_number',
     ];
 
-    return sensitiveKeys.some(sensitiveKey =>
-      key.includes(sensitiveKey) || key.includes(sensitiveKey.replace('_', ''))
+    return sensitiveKeys.some(
+      (sensitiveKey) =>
+        key.includes(sensitiveKey) ||
+        key.includes(sensitiveKey.replace('_', '')),
     );
   }
 
@@ -202,11 +202,18 @@ export class DataMasker {
     try {
       const urlObj = new URL(url);
       const sensitiveParams = [
-        'token', 'key', 'secret', 'password', 'auth',
-        'api_key', 'access_token', 'refresh_token', 'jwt'
+        'token',
+        'key',
+        'secret',
+        'password',
+        'auth',
+        'api_key',
+        'access_token',
+        'refresh_token',
+        'jwt',
       ];
 
-      sensitiveParams.forEach(param => {
+      sensitiveParams.forEach((param) => {
         if (urlObj.searchParams.has(param)) {
           urlObj.searchParams.set(param, '[REDACTED]');
         }
@@ -228,7 +235,7 @@ export class DataMasker {
     // Remove file paths that might contain sensitive information
     masked = masked.replace(
       /\/[^\s]+\/(?:config|secrets|private|confidential)[^\s]*/g,
-      '/[SENSITIVE_PATH_REDACTED]'
+      '/[SENSITIVE_PATH_REDACTED]',
     );
 
     // Mask any embedded credentials in file paths
@@ -262,6 +269,6 @@ export class DataMasker {
       /\b\d{3}-?\d{2}-?\d{4}\b/,
     ];
 
-    return sensitivePatterns.some(pattern => pattern.test(data));
+    return sensitivePatterns.some((pattern) => pattern.test(data));
   }
 }

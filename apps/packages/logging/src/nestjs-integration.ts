@@ -18,33 +18,37 @@ import { LogConfig, ContextType, ServiceType, Environment } from './types';
  */
 @Injectable({ scope: Scope.REQUEST })
 export class SystemBoardLoggerService implements LoggerService {
-  private logger: StructuredLogger;
-  private requestId: string;
+  private readonly logger: StructuredLogger;
+  private readonly requestId: string;
 
   constructor(@Inject(REQUEST) private readonly request?: Request) {
     // Extract request ID from headers or generate one
-    this.requestId = request?.headers?.['x-request-id'] as string ||
-                     (request as any)?.id ||
-                     `req_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
+    this.requestId =
+      (request?.headers?.['x-request-id'] as string) ||
+      (request as Request & { id?: string })?.id ||
+      `req_${Date.now()}_${Math.random().toString(36).substring(2, 11)}`;
 
     // Get service configuration from environment
     const config: LogConfig = {
       service: (process.env.SERVICE_NAME as ServiceType) || 'backend',
       environment: (process.env.NODE_ENV as Environment) || 'development',
-      level: (process.env.LOG_LEVEL as any) || 'info',
+      level:
+        (process.env.LOG_LEVEL as
+          | 'error'
+          | 'warn'
+          | 'info'
+          | 'debug'
+          | 'verbose') || 'info',
       lokiUrl: process.env.LOKI_URL || 'http://localhost:3100',
       enableConsole: process.env.ENABLE_CONSOLE_LOGS !== 'false',
       enableFile: process.env.ENABLE_FILE_LOGS === 'true',
       enableLoki: process.env.ENABLE_LOKI_LOGS !== 'false',
-      filePath: process.env.LOG_FILE_PATH || '/var/log/system-board/nestjs-app.log',
+      filePath:
+        process.env.LOG_FILE_PATH || '/var/log/system-board/nestjs-app.log',
       maskSensitiveData: process.env.MASK_SENSITIVE_DATA !== 'false',
       labels: {
         requestId: this.requestId,
-        userAgent: request?.headers?.['user-agent']
-          ? (Array.isArray(request.headers['user-agent'])
-            ? request.headers['user-agent'][0]
-            : request.headers['user-agent'])
-          : 'unknown',
+        userAgent: this.getUserAgent(request),
       },
     };
 
@@ -54,11 +58,11 @@ export class SystemBoardLoggerService implements LoggerService {
   /**
    * LoggerService interface implementation
    */
-  log(message: any, context?: string): void {
+  log(message: string, context?: string): void {
     this.info(message, { context: context as ContextType });
   }
 
-  error(message: any, trace?: string, context?: string): void {
+  error(message: string, trace?: string, context?: string): void {
     const error = trace ? new Error(message) : undefined;
     if (error && trace) {
       error.stack = trace;
@@ -70,44 +74,47 @@ export class SystemBoardLoggerService implements LoggerService {
       {
         context: context as ContextType,
         request_id: this.requestId,
-      }
+      },
     );
   }
 
-  warn(message: any, context?: string): void {
+  warn(message: string, context?: string): void {
     this.logger.warn(
       typeof message === 'string' ? message : JSON.stringify(message),
       {
         context: context as ContextType,
         request_id: this.requestId,
-      }
+      },
     );
   }
 
-  debug(message: any, context?: string): void {
+  debug(message: string, context?: string): void {
     this.logger.debug(
       typeof message === 'string' ? message : JSON.stringify(message),
       {
         context: context as ContextType,
         request_id: this.requestId,
-      }
+      },
     );
   }
 
-  verbose(message: any, context?: string): void {
+  verbose(message: string, context?: string): void {
     this.logger.verbose(
       typeof message === 'string' ? message : JSON.stringify(message),
       {
         context: context as ContextType,
         request_id: this.requestId,
-      }
+      },
     );
   }
 
   /**
    * Extended logging methods specific to System Board
    */
-  info(message: string, metadata: { context?: ContextType; [key: string]: any } = {}): void {
+  info(
+    message: string,
+    metadata: { context?: ContextType; [key: string]: unknown } = {},
+  ): void {
     this.logger.info(message, {
       ...metadata,
       request_id: this.requestId,
@@ -122,7 +129,7 @@ export class SystemBoardLoggerService implements LoggerService {
     path: string,
     statusCode: number,
     responseTime: number,
-    userId?: string
+    userId?: string,
   ): void {
     this.logger.http(method, path, statusCode, responseTime, {
       request_id: this.requestId,
@@ -139,7 +146,7 @@ export class SystemBoardLoggerService implements LoggerService {
     packageName: string,
     packageVersion: string,
     severity: 'critical' | 'high' | 'medium' | 'low' | 'info',
-    cvssScore: number
+    cvssScore: number,
   ): void {
     this.logger.vulnerability(
       cveId,
@@ -149,7 +156,7 @@ export class SystemBoardLoggerService implements LoggerService {
       cvssScore,
       {
         request_id: this.requestId,
-      }
+      },
     );
   }
 
@@ -162,7 +169,7 @@ export class SystemBoardLoggerService implements LoggerService {
     resource: string,
     resourceId: string,
     result: 'success' | 'failure' | 'partial',
-    metadata?: Record<string, any>
+    metadata?: Record<string, unknown>,
   ): void {
     this.logger.audit(actor, action, resource, resourceId, result, {
       request_id: this.requestId,
@@ -178,7 +185,7 @@ export class SystemBoardLoggerService implements LoggerService {
     event: string,
     severity: 'critical' | 'high' | 'medium' | 'low',
     resource: string,
-    metadata?: Record<string, any>
+    metadata?: Record<string, unknown>,
   ): void {
     this.logger.security(event, severity, resource, {
       request_id: this.requestId,
@@ -195,7 +202,7 @@ export class SystemBoardLoggerService implements LoggerService {
     duration: number,
     success: boolean,
     threshold?: number,
-    additionalMetrics?: Record<string, number>
+    additionalMetrics?: Record<string, number>,
   ): void {
     this.logger.performance(
       operation,
@@ -207,7 +214,7 @@ export class SystemBoardLoggerService implements LoggerService {
         success,
         metrics: additionalMetrics,
       },
-      threshold
+      threshold,
     );
   }
 
@@ -218,9 +225,8 @@ export class SystemBoardLoggerService implements LoggerService {
     query: string,
     duration: number,
     success: boolean,
-    error?: Error
+    error?: Error,
   ): void {
-    const level = success ? 'debug' : 'error';
     const message = `Database query ${success ? 'completed' : 'failed'} in ${duration}ms`;
 
     if (success) {
@@ -254,17 +260,16 @@ export class SystemBoardLoggerService implements LoggerService {
     method: string,
     statusCode: number,
     duration: number,
-    error?: Error
+    error?: Error,
   ): void {
     const success = statusCode >= 200 && statusCode < 400;
-    const level = success ? 'info' : 'error';
 
     const message = `External API call to ${service} ${method} ${endpoint} - ${statusCode} (${duration}ms)`;
 
     if (success) {
       this.logger.info(message, {
         context: 'external-integration',
-        http_method: method as any,
+        http_method: method as 'GET' | 'POST' | 'PUT' | 'DELETE' | 'PATCH',
         http_status: statusCode,
         response_time_ms: duration,
         request_id: this.requestId,
@@ -277,7 +282,7 @@ export class SystemBoardLoggerService implements LoggerService {
       this.logger.error(message, error, {
         context: 'external-integration',
         error_category: 'external-service',
-        http_method: method as any,
+        http_method: method as 'GET' | 'POST' | 'PUT' | 'DELETE' | 'PATCH',
         http_status: statusCode,
         response_time_ms: duration,
         request_id: this.requestId,
@@ -292,11 +297,29 @@ export class SystemBoardLoggerService implements LoggerService {
   /**
    * Create a child logger with additional context
    */
-  createChildLogger(context: ContextType, metadata: Record<string, any> = {}): StructuredLogger {
+  createChildLogger(
+    context: ContextType,
+    metadata: Record<string, unknown> = {},
+  ): StructuredLogger {
     return this.logger.child(context, {
       ...metadata,
       request_id: this.requestId,
     });
+  }
+
+  /**
+   * Get user agent from request headers
+   */
+  private getUserAgent(request?: Request): string {
+    if (!request?.headers?.['user-agent']) {
+      return 'unknown';
+    }
+
+    const userAgent = request.headers['user-agent'];
+    if (Array.isArray(userAgent)) {
+      return userAgent[0];
+    }
+    return userAgent;
   }
 
   /**
@@ -345,17 +368,25 @@ export class LoggingModule {
 /**
  * Decorator for automatic performance logging
  */
-export function LogPerformance(operation?: string, threshold?: number) {
-  return function (target: any, propertyName: string, descriptor: PropertyDescriptor) {
-    const method = descriptor.value;
+export function LogPerformance(operation?: string) {
+  return function (
+    target: object,
+    propertyName: string,
+    descriptor: PropertyDescriptor,
+  ) {
+    const method = descriptor.value as (...args: unknown[]) => Promise<unknown>;
 
-    descriptor.value = async function (...args: any[]) {
-      const operationName = operation || `${target.constructor.name}.${propertyName}`;
+    descriptor.value = async function (...args: unknown[]) {
+      const operationName =
+        operation ||
+        `${(target as { constructor: { name: string } }).constructor.name}.${propertyName}`;
 
       // Try to get logger from this context, or create simple logger
       let logger: SystemBoardLoggerService;
       try {
-        logger = (this as any).logger || new SystemBoardLoggerService(undefined);
+        logger =
+          (this as { logger?: SystemBoardLoggerService }).logger ||
+          new SystemBoardLoggerService(undefined);
       } catch {
         // Fallback to console logging if NestJS context is not available
         console.log(`Performance: ${operationName}`);
@@ -373,7 +404,10 @@ export function LogPerformance(operation?: string, threshold?: number) {
         const duration = Date.now() - startTime;
 
         logger.logPerformance(operationName, duration, false);
-        logger.error(`Performance logging failed for ${operationName}`, error as string);
+        logger.error(
+          `Performance logging failed for ${operationName}`,
+          error as string,
+        );
         throw error;
       }
     };
@@ -386,13 +420,19 @@ export function LogPerformance(operation?: string, threshold?: number) {
  * Decorator for automatic audit logging
  */
 export function LogAudit(action: string, resource: string) {
-  return function (target: any, propertyName: string, descriptor: PropertyDescriptor) {
-    const method = descriptor.value;
+  return function (
+    target: object,
+    propertyName: string,
+    descriptor: PropertyDescriptor,
+  ) {
+    const method = descriptor.value as (...args: unknown[]) => Promise<unknown>;
 
-    descriptor.value = async function (...args: any[]) {
+    descriptor.value = async function (...args: unknown[]) {
       let logger: SystemBoardLoggerService;
       try {
-        logger = (this as any).logger || new SystemBoardLoggerService(undefined);
+        logger =
+          (this as { logger?: SystemBoardLoggerService }).logger ||
+          new SystemBoardLoggerService(undefined);
       } catch {
         // Fallback to console logging if NestJS context is not available
         console.log(`Audit: ${action} ${resource}`);
@@ -403,14 +443,18 @@ export function LogAudit(action: string, resource: string) {
         const result = await method.apply(this, args);
 
         // Extract actor and resource ID from context or args
-        const actor = (this as any).currentUser?.id || 'system';
-        const resourceId = args[0]?.id || 'unknown';
+        const actor =
+          (this as { currentUser?: { id: string } }).currentUser?.id ||
+          'system';
+        const resourceId = (args[0] as { id?: string })?.id || 'unknown';
 
         logger.logAudit(actor, action, resource, resourceId, 'success');
         return result;
       } catch (error) {
-        const actor = (this as any).currentUser?.id || 'system';
-        const resourceId = args[0]?.id || 'unknown';
+        const actor =
+          (this as { currentUser?: { id: string } }).currentUser?.id ||
+          'system';
+        const resourceId = (args[0] as { id?: string })?.id || 'unknown';
 
         logger.logAudit(actor, action, resource, resourceId, 'failure', {
           error: error instanceof Error ? error.message : String(error),

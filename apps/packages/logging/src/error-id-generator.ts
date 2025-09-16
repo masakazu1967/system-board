@@ -83,18 +83,18 @@ export class ErrorIdGenerator {
       // Timestamps
       /\d{4}-\d{2}-\d{2}[T ]\d{2}:\d{2}:\d{2}/g,
       // Numbers (but preserve version numbers)
-      /(?<![\d\.])(\d{4,}|\d+\.\d{3,})(?![\d\.])/g,
+      /(?<![\d.])(\d{4,}|\d+\.\d{3,})(?![\d.])/g,
       // File paths
-      /\/[\w\/\.-]+\.(js|ts|json|log)/g,
+      /\/[\w/.-]+\.(js|ts|json|log)/g,
       // IP addresses
-      /\b(?:[0-9]{1,3}\.){3}[0-9]{1,3}\b/g,
+      /\b(?:\d{1,3}\.){3}\d{1,3}\b/g,
       // Database IDs
       /\bid\s*[=:]\s*\d+/gi,
       // Request IDs
       /request[_-]id\s*[=:]\s*[\w-]+/gi,
     ];
 
-    patterns.forEach(pattern => {
+    patterns.forEach((pattern) => {
       normalized = normalized.replace(pattern, '[DYNAMIC]');
     });
 
@@ -111,19 +111,24 @@ export class ErrorIdGenerator {
     const lines = stackTrace.split('\n');
     const relevantLines: string[] = [];
 
-    for (const line of lines.slice(0, 5)) { // Take first 5 lines
+    for (const line of lines.slice(0, 5)) {
+      // Take first 5 lines
       const trimmed = line.trim();
 
       // Skip generic error lines
-      if (trimmed.startsWith('Error:') ||
-          trimmed.startsWith('at new ') ||
-          trimmed.includes('node_modules') ||
-          trimmed.includes('internal/')) {
+      if (
+        trimmed.startsWith('Error:') ||
+        trimmed.startsWith('at new ') ||
+        trimmed.includes('node_modules') ||
+        trimmed.includes('internal/')
+      ) {
         continue;
       }
 
       // Extract function and file info
-      const match = trimmed.match(/at\s+([^(]+)\s*\([^)]*\/([^/)]+):\d+:\d+\)/);
+      const match = RegExp(/at\s+([^(]+)\s*\([^)]*\/([^/)]+):\d+:\d+\)/).exec(
+        trimmed,
+      );
       if (match) {
         relevantLines.push(`${match[1]}@${match[2]}`);
       } else if (trimmed.startsWith('at ')) {
@@ -144,7 +149,7 @@ export class ErrorIdGenerator {
   generateVulnerabilityErrorId(
     cveId: string,
     packageName: string,
-    severity: string
+    severity: string,
   ): string {
     const components = ['vulnerability', cveId, packageName, severity];
     const signature = components.join('|');
@@ -158,13 +163,13 @@ export class ErrorIdGenerator {
   generatePerformanceErrorId(
     operation: string,
     threshold: number,
-    actual: number
+    actual: number,
   ): string {
     const components = [
       'performance',
       operation,
       `threshold_${threshold}`,
-      `level_${Math.floor(actual / threshold)}`
+      `level_${Math.floor(actual / threshold)}`,
     ];
     const signature = components.join('|');
     const hash = createHash('sha256').update(signature).digest('hex');
@@ -177,7 +182,7 @@ export class ErrorIdGenerator {
   generateSecurityErrorId(
     securityEvent: string,
     resource: string,
-    severity: string
+    severity: string,
   ): string {
     const components = ['security', securityEvent, resource, severity];
     const signature = components.join('|');

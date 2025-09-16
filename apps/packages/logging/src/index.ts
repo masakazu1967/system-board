@@ -33,17 +33,24 @@ import { LogConfig, ServiceType, Environment } from './types';
 export function createLogger(
   service: ServiceType,
   environment: Environment = 'development',
-  overrides: Partial<LogConfig> = {}
+  overrides: Partial<LogConfig> = {},
 ): StructuredLogger {
   const defaultConfig: LogConfig = {
     service,
     environment,
-    level: (process.env.LOG_LEVEL as any) || 'info',
+    level:
+      (process.env.LOG_LEVEL as
+        | 'error'
+        | 'warn'
+        | 'info'
+        | 'debug'
+        | 'verbose') || 'info',
     lokiUrl: process.env.LOKI_URL || 'http://localhost:3100',
     enableConsole: process.env.NODE_ENV !== 'production',
     enableFile: process.env.ENABLE_FILE_LOGS === 'true',
     enableLoki: process.env.ENABLE_LOKI_LOGS !== 'false',
-    filePath: process.env.LOG_FILE_PATH || `/var/log/system-board/${service}.log`,
+    filePath:
+      process.env.LOG_FILE_PATH || `/var/log/system-board/${service}.log`,
     maskSensitiveData: process.env.MASK_SENSITIVE_DATA !== 'false',
     labels: {
       version: process.env.APP_VERSION || '0.1.0',
