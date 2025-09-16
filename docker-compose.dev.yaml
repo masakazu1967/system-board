@@ -113,7 +113,7 @@ services:
     container_name: system-board-promtail
     volumes:
       - ./config/promtail:/etc/promtail
-      - ./logs:/var/log/system-board:rw
+      - logs_volume:/var/log/system-board
       - /var/lib/docker/containers:/var/lib/docker/containers:ro
       - /var/log:/var/log:ro
     command: -config.file=/etc/promtail/config.yml
@@ -178,6 +178,7 @@ volumes:
   loki_data:
   grafana_data:
   prometheus_data:
+  logs_volume:
 
 networks:
   system-board:
