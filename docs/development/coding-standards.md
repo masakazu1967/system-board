@@ -170,10 +170,15 @@ export abstract class Entity<
 #### 具体的なエンティティ実装例
 
 ```typescript
-// SystemEntityのプロパティ定義
+// SystemEntityのプロパティ定義（イベントストーミング Phase1 対応）
 interface SystemProps {
   name: SystemName;
   status: SystemStatus;
+  hostId: HostId;
+  systemType: SystemType;
+  criticality: SystemCriticality;
+  lastValidated: Date;
+  configurationVersion: string;
 }
 
 // ドメインエンティティの例
@@ -227,7 +232,7 @@ export class SystemEntity extends Entity<SystemId, SystemProps> {
     return new SystemEntity(this.id, newProps);
   }
 
-  // ビジネスルールメソッド
+  // ビジネスルールメソッド（イベントストーミング Phase2 Commands対応）
   public isActive(): boolean {
     return this.props.status.equals(SystemStatus.ACTIVE);
   }
@@ -235,6 +240,27 @@ export class SystemEntity extends Entity<SystemId, SystemProps> {
   public canBeDeleted(): boolean {
     return this.props.status.equals(SystemStatus.INACTIVE) ||
            this.props.status.equals(SystemStatus.DEPRECATED);
+  }
+
+  public requiresUrgentAttention(): boolean {
+    return this.props.criticality.isHigh() &&
+           this.daysSinceLastValidation() > 30;
+  }
+
+  public isEOLApproaching(): boolean {
+    // EOL 30日前警告ルール（Phase3 Business Rules）
+    return this.daysUntilEOL() <= 30;
+  }
+
+  private daysSinceLastValidation(): number {
+    const now = new Date();
+    const timeDiff = now.getTime() - this.props.lastValidated.getTime();
+    return Math.floor(timeDiff / (1000 * 3600 * 24));
+  }
+
+  private daysUntilEOL(): number {
+    // 実装時にEOL情報を取得するロジックを追加
+    return 0; // プレースホルダー
   }
 }
 ```
@@ -536,6 +562,140 @@ export class EmailAddress extends ValueObject<EmailProps> {
     return this.props.domain;
   }
 }
+
+// イベントストーミング対応の追加値オブジェクト
+export class HostId extends PrimitiveValueObject<string> {
+  private constructor(value: string) {
+    super(value);
+  }
+
+  public static create(value: string): Result<HostId, ValidationError> {
+    if (!value || !/^host-[a-zA-Z0-9]+$/.test(value)) {
+      return {
+        success: false,
+        error: new ValidationError('HostId must match pattern host-[alphanumeric]')
+      };
+    }
+
+    return {
+      success: true,
+      data: new HostId(value)
+    };
+  }
+}
+
+export class SystemType extends PrimitiveValueObject<string> {
+  private constructor(value: string) {
+    super(value);
+  }
+
+  public static create(value: string): Result<SystemType, ValidationError> {
+    const validTypes = ['web-server', 'database', 'application', 'middleware', 'monitoring'];
+    if (!validTypes.includes(value)) {
+      return {
+        success: false,
+        error: new ValidationError(`SystemType must be one of: ${validTypes.join(', ')}`)
+      };
+    }
+
+    return {
+      success: true,
+      data: new SystemType(value)
+    };
+  }
+}
+
+export class SystemCriticality extends PrimitiveValueObject<number> {
+  private constructor(value: number) {
+    super(value);
+  }
+
+  public static create(value: number): Result<SystemCriticality, ValidationError> {
+    if (value < 1 || value > 5) {
+      return {
+        success: false,
+        error: new ValidationError('SystemCriticality must be between 1 and 5')
+      };
+    }
+
+    return {
+      success: true,
+      data: new SystemCriticality(value)
+    };
+  }
+
+  public isHigh(): boolean {
+    return this.value >= 4;
+  }
+}
+
+export class CVSSScore extends PrimitiveValueObject<number> {
+  private constructor(value: number) {
+    super(value);
+  }
+
+  public static create(value: number): Result<CVSSScore, ValidationError> {
+    if (value < 0 || value > 10) {
+      return {
+        success: false,
+        error: new ValidationError('CVSS Score must be between 0.0 and 10.0')
+      };
+    }
+
+    return {
+      success: true,
+      data: new CVSSScore(value)
+    };
+  }
+
+  public isCritical(): boolean {
+    return this.value >= 9.0;
+  }
+
+  public isHigh(): boolean {
+    return this.value >= 7.0;
+  }
+}
+
+export class VulnerabilityId extends PrimitiveValueObject<string> {
+  private constructor(value: string) {
+    super(value);
+  }
+
+  public static create(value: string): Result<VulnerabilityId, ValidationError> {
+    if (!value || !/^vuln-[a-zA-Z0-9-]+$/.test(value)) {
+      return {
+        success: false,
+        error: new ValidationError('VulnerabilityId must match pattern vuln-[alphanumeric-]')
+      };
+    }
+
+    return {
+      success: true,
+      data: new VulnerabilityId(value)
+    };
+  }
+}
+
+export class TaskId extends PrimitiveValueObject<string> {
+  private constructor(value: string) {
+    super(value);
+  }
+
+  public static create(value: string): Result<TaskId, ValidationError> {
+    if (!value || !/^task-[a-zA-Z0-9-]+$/.test(value)) {
+      return {
+        success: false,
+        error: new ValidationError('TaskId must match pattern task-[alphanumeric-]')
+      };
+    }
+
+    return {
+      success: true,
+      data: new TaskId(value)
+    };
+  }
+}
 ```
 
 ## 6. 関数・メソッド規約
@@ -799,12 +959,28 @@ export class SystemController {
 **ドメインサービス**: 単一コンテキスト内の複数ドメインオブジェクト間の複雑なビジネスロジックを担当
 
 ```typescript
-// リポジトリインターフェース - 値オブジェクトを使用
+// リポジトリインターフェース - イベントストーミング Phase2 Commands準拠
 export interface SystemRepository {
+  // 基本CRUD操作
   findById(id: SystemId): Promise<SystemEntity | null>;
   save(system: SystemEntity): Promise<SystemEntity>;
   delete(id: SystemId): Promise<void>;
+
+  // 検索クエリ（Phase1 Domain Events準拠）
   findByStatus(status: SystemStatus): Promise<SystemEntity[]>;
+  findByHostId(hostId: HostId): Promise<SystemEntity[]>;
+  findByCriticality(criticality: SystemCriticality): Promise<SystemEntity[]>;
+  findBySystemType(systemType: SystemType): Promise<SystemEntity[]>;
+
+  // EOL・メンテナンス関連検索
+  findSystemsRequiringValidation(): Promise<SystemEntity[]>;
+  findEOLApproachingSystems(daysThreshold: number): Promise<SystemEntity[]>;
+
+  // 脆弱性管理関連
+  findSystemsWithVulnerabilities(): Promise<SystemEntity[]>;
+  findCriticalSystems(): Promise<SystemEntity[]>;
+
+  // 全件取得
   findAll(): Promise<SystemEntity[]>;
 }
 
@@ -973,54 +1149,117 @@ export class SystemDomainService {
   }
 }
 
-// ドメインイベント定義例
-export class SystemRiskCalculationRequestedEvent implements DomainEvent {
+// ドメインイベント定義例（イベントストーミング Phase1 準拠）
+
+// System Management Context Events
+export class SystemRegisteredEvent implements DomainEvent {
   public readonly eventId: string = EventId.generate();
   public readonly occurredAt: Date = new Date();
-  public readonly eventType: string = 'SystemRiskCalculationRequested';
+  public readonly eventType: string = 'SystemRegistered';
 
   constructor(
     public readonly payload: {
       systemId: SystemId;
-      requestId: RequestId;
-      requestedAt: Date;
-      systemCriticality: number;
-      exposureLevel: number;
+      systemName: SystemName;
+      hostId: HostId;
+      systemType: SystemType;
+      registeredBy: UserId;
     }
   ) {}
 }
 
-export class VulnerabilityDataProvidedEvent implements DomainEvent {
+export class SystemConfigurationUpdatedEvent implements DomainEvent {
   public readonly eventId: string = EventId.generate();
   public readonly occurredAt: Date = new Date();
-  public readonly eventType: string = 'VulnerabilityDataProvided';
+  public readonly eventType: string = 'SystemConfigurationUpdated';
 
   constructor(
     public readonly payload: {
       systemId: SystemId;
-      requestId: RequestId;
-      vulnerabilityScore: number;
-      vulnerabilityCount: number;
-      providedAt: Date;
+      configurationVersion: string;
+      updatedBy: UserId;
+      changeDescription: string;
     }
   ) {}
-
-  public get systemId(): SystemId { return this.payload.systemId; }
-  public get requestId(): RequestId { return this.payload.requestId; }
-  public get vulnerabilityScore(): number { return this.payload.vulnerabilityScore; }
 }
 
-export class SystemRiskCalculationCompletedEvent implements DomainEvent {
+export class SystemValidationCompletedEvent implements DomainEvent {
   public readonly eventId: string = EventId.generate();
   public readonly occurredAt: Date = new Date();
-  public readonly eventType: string = 'SystemRiskCalculationCompleted';
+  public readonly eventType: string = 'SystemValidationCompleted';
 
   constructor(
     public readonly payload: {
       systemId: SystemId;
-      requestId: RequestId;
-      riskScore: number;
-      calculatedAt: Date;
+      validationResult: ValidationResult;
+      validatedAt: Date;
+      validatedBy: UserId;
+    }
+  ) {}
+}
+
+// Vulnerability Management Context Events
+export class VulnerabilityDetectedEvent implements DomainEvent {
+  public readonly eventId: string = EventId.generate();
+  public readonly occurredAt: Date = new Date();
+  public readonly eventType: string = 'VulnerabilityDetected';
+
+  constructor(
+    public readonly payload: {
+      vulnerabilityId: VulnerabilityId;
+      systemId: SystemId;
+      cveId: CVEId;
+      cvssScore: CVSSScore;
+      severity: VulnerabilitySeverity;
+      detectedAt: Date;
+    }
+  ) {}
+}
+
+export class UrgentTaskCreatedEvent implements DomainEvent {
+  public readonly eventId: string = EventId.generate();
+  public readonly occurredAt: Date = new Date();
+  public readonly eventType: string = 'UrgentTaskCreated';
+
+  constructor(
+    public readonly payload: {
+      taskId: TaskId;
+      systemId: SystemId;
+      vulnerabilityId: VulnerabilityId;
+      priority: TaskPriority;
+      assignedTo: UserId;
+      dueDate: Date;
+    }
+  ) {}
+}
+
+// Task Management Context Events
+export class TaskAssignedEvent implements DomainEvent {
+  public readonly eventId: string = EventId.generate();
+  public readonly occurredAt: Date = new Date();
+  public readonly eventType: string = 'TaskAssigned';
+
+  constructor(
+    public readonly payload: {
+      taskId: TaskId;
+      assignedTo: UserId;
+      assignedBy: UserId;
+      assignedAt: Date;
+    }
+  ) {}
+}
+
+export class TaskCompletedEvent implements DomainEvent {
+  public readonly eventId: string = EventId.generate();
+  public readonly occurredAt: Date = new Date();
+  public readonly eventType: string = 'TaskCompleted';
+
+  constructor(
+    public readonly payload: {
+      taskId: TaskId;
+      completedBy: UserId;
+      completedAt: Date;
+      completionNotes: string;
     }
   ) {}
 }
