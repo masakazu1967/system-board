@@ -41,7 +41,7 @@ SystemEntity.ts         // SystemEntityクラス定義
 
 ```typescript
 ValueObject.spec.ts     // ValueObjectクラスのテスト
-UserRepository.spec.ts  // UserRepositoryのテスト
+SystemEntity.spec.ts    // SystemEntityクラスのテスト
 ```
 
 #### 関数・ユーティリティ
@@ -137,56 +137,342 @@ enum SystemStatus {
 
 ### 基本構造
 
+#### エンティティ基底クラス設計
+
 ```typescript
+// 抽象エンティティ基底クラス
+export abstract class AbstractEntity<ID extends PrimitiveValueObject<string>, PROPS> {
+  protected constructor(public readonly id: ID, protected readonly props: PROPS) {}
+
+  public equals(entity?: AbstractEntity<ID, PROPS>): boolean {
+    if (entity == null) {
+      return false;
+    }
+    return this.id.equals(entity.id);
+  }
+}
+
+// 具象エンティティ基底クラス
+interface Props {
+  [key: string]: any;
+}
+
+export abstract class Entity<
+  ID extends PrimitiveValueObject<string>,
+  PROPS extends Props
+> extends AbstractEntity<ID, PROPS> {
+  protected constructor(id: ID, props: PROPS) {
+    super(id, props);
+  }
+}
+```
+
+#### 具体的なエンティティ実装例
+
+```typescript
+// SystemEntityのプロパティ定義
+interface SystemProps {
+  name: SystemName;
+  status: SystemStatus;
+}
+
 // ドメインエンティティの例
-export class SystemEntity {
-  private constructor(
-    private readonly _id: SystemId,
-    private readonly _name: SystemName,
-    private readonly _status: SystemStatus
-  ) {}
+export class SystemEntity extends Entity<SystemId, SystemProps> {
+  private constructor(id: SystemId, props: SystemProps) {
+    super(id, props);
+  }
 
-  // ファクトリーメソッド
-  public static create(props: {
-    id: string;
-    name: string;
-    status: string;
-  }): Result<SystemEntity, ValidationError> {
-    // バリデーションロジック
-    const id = SystemId.create(props.id);
-    if (!id.success) return id;
+  // ファクトリーメソッド（値オブジェクトでのやり取り）
+  public static create(
+    id: SystemId,
+    props: SystemProps
+  ): Result<SystemEntity, ValidationError> {
+    // ビジネスルール検証
+    if (!id || !props.name || !props.status) {
+      return {
+        success: false,
+        error: new ValidationError('Required properties are missing')
+      };
+    }
 
-    const name = SystemName.create(props.name);
-    if (!name.success) return name;
-
-    // インスタンス生成
     return {
       success: true,
-      data: new SystemEntity(id.data, name.data, props.status as SystemStatus)
+      data: new SystemEntity(id, props)
     };
   }
 
   // ゲッター
-  public get id(): SystemId {
-    return this._id;
+  public get name(): SystemName {
+    return this.props.name;
   }
 
-  public get name(): SystemName {
-    return this._name;
+  public get status(): SystemStatus {
+    return this.props.status;
   }
 
   // ドメインメソッド
   public updateStatus(newStatus: SystemStatus): SystemEntity {
-    return new SystemEntity(this._id, this._name, newStatus);
+    const newProps: SystemProps = {
+      ...this.props,
+      status: newStatus
+    };
+    return new SystemEntity(this.id, newProps);
   }
+
+  public updateName(newName: SystemName): SystemEntity {
+    const newProps: SystemProps = {
+      ...this.props,
+      name: newName
+    };
+    return new SystemEntity(this.id, newProps);
+  }
+
+  // ビジネスルールメソッド
+  public isActive(): boolean {
+    return this.props.status.equals(SystemStatus.ACTIVE);
+  }
+
+  public canBeDeleted(): boolean {
+    return this.props.status.equals(SystemStatus.INACTIVE) ||
+           this.props.status.equals(SystemStatus.DEPRECATED);
+  }
+}
+```
+
+#### ビルダーパターンの実装
+
+```typescript
+// 値オブジェクト用ビルダー
+export class SystemIdBuilder {
+  private value: string | undefined;
+  private vo: SystemId | undefined;
+
+  private constructor() {}
+
+  public static of(): SystemIdBuilder {
+    return new SystemIdBuilder();
+  }
+
+  public setValue(value: string): this {
+    this.value = value;
+    return this;
+  }
+
+  public set(vo: SystemId): this {
+    this.vo = vo;
+    return this;
+  }
+
+  public build(): Result<SystemId, ValidationError> {
+    if (this.vo != null) {
+      return { success: true, data: this.vo };
+    }
+    if (this.value != null) {
+      return SystemId.create(this.value);
+    }
+    return { success: false, error: new ValidationError('SystemId value not set') };
+  }
+}
+
+export class SystemNameBuilder {
+  private value: string | undefined;
+  private vo: SystemName | undefined;
+
+  private constructor() {}
+
+  public static of(): SystemNameBuilder {
+    return new SystemNameBuilder();
+  }
+
+  public setValue(value: string): this {
+    this.value = value;
+    return this;
+  }
+
+  public set(vo: SystemName): this {
+    this.vo = vo;
+    return this;
+  }
+
+  public build(): Result<SystemName, ValidationError> {
+    if (this.vo != null) {
+      return { success: true, data: this.vo };
+    }
+    if (this.value != null) {
+      return SystemName.create(this.value);
+    }
+    return { success: false, error: new ValidationError('SystemName value not set') };
+  }
+}
+
+export class SystemStatusBuilder {
+  private value: string | undefined;
+  private vo: SystemStatus | undefined;
+
+  private constructor() {}
+
+  public static of(): SystemStatusBuilder {
+    return new SystemStatusBuilder();
+  }
+
+  public setValue(value: string): this {
+    this.value = value;
+    return this;
+  }
+
+  public set(vo: SystemStatus): this {
+    this.vo = vo;
+    return this;
+  }
+
+  public build(): Result<SystemStatus, ValidationError> {
+    if (this.vo != null) {
+      return { success: true, data: this.vo };
+    }
+    if (this.value != null) {
+      return SystemStatus.create(this.value);
+    }
+    return { success: false, error: new ValidationError('SystemStatus value not set') };
+  }
+}
+
+// エンティティ用ビルダー
+export class SystemEntityBuilder {
+  private idBuilder = SystemIdBuilder.of();
+  private nameBuilder = SystemNameBuilder.of();
+  private statusBuilder = SystemStatusBuilder.of();
+
+  private constructor() {}
+
+  public static of(): SystemEntityBuilder {
+    return new SystemEntityBuilder();
+  }
+
+  // ID設定メソッド
+  public setIdValue(value: string): this {
+    this.idBuilder.setValue(value);
+    return this;
+  }
+
+  public setId(vo: SystemId): this {
+    this.idBuilder.set(vo);
+    return this;
+  }
+
+  // Name設定メソッド
+  public setNameValue(value: string): this {
+    this.nameBuilder.setValue(value);
+    return this;
+  }
+
+  public setName(vo: SystemName): this {
+    this.nameBuilder.set(vo);
+    return this;
+  }
+
+  // Status設定メソッド
+  public setStatusValue(value: string): this {
+    this.statusBuilder.setValue(value);
+    return this;
+  }
+
+  public setStatus(vo: SystemStatus): this {
+    this.statusBuilder.set(vo);
+    return this;
+  }
+
+  public build(): Result<SystemEntity, ValidationError> {
+    // 各値オブジェクトを構築
+    const idResult = this.idBuilder.build();
+    if (!idResult.success) return idResult;
+
+    const nameResult = this.nameBuilder.build();
+    if (!nameResult.success) return nameResult;
+
+    const statusResult = this.statusBuilder.build();
+    if (!statusResult.success) return statusResult;
+
+    // エンティティを構築
+    return SystemEntity.create(idResult.data, {
+      name: nameResult.data,
+      status: statusResult.data
+    });
+  }
+}
+```
+
+#### ビルダーパターンの使用例
+
+```typescript
+// 値オブジェクトと値本体が混在する場合の例
+const existingId: SystemId = SystemId.create('sys-123').data;
+const name: string = 'Production Server';
+const existingStatus: SystemStatus = SystemStatus.ACTIVE;
+
+const systemResult = SystemEntityBuilder
+  .of()
+  .setId(existingId)           // 既存の値オブジェクト
+  .setNameValue(name)          // 文字列値
+  .setStatus(existingStatus)   // 既存の値オブジェクト
+  .build();
+
+if (systemResult.success) {
+  const system = systemResult.data;
+  console.log(`Created system: ${system.name.toString()}`);
 }
 ```
 
 ### 値オブジェクト
 
+#### 基底クラス設計
+
 ```typescript
-export class SystemId {
-  private constructor(private readonly value: string) {}
+import deepEqual from 'deep-equal';
+
+// 抽象基底クラス
+export abstract class AbstractValueObject<T> {
+  protected constructor(protected readonly props: T) {}
+
+  public equals(vo?: AbstractValueObject<T>): boolean {
+    if (vo == null) {
+      return false;
+    }
+    return deepEqual(this.props, vo.props);
+  }
+}
+
+// プリミティブ型値オブジェクト基底クラス
+export abstract class PrimitiveValueObject<T extends string | number | bigint | boolean>
+  extends AbstractValueObject<T> {
+  protected constructor(props: T) {
+    super(props);
+  }
+
+  public get value(): T {
+    return this.props;
+  }
+}
+
+// 複合型値オブジェクト基底クラス
+interface Props {
+  [key: string]: any;
+}
+
+export abstract class ValueObject<T extends Props> extends AbstractValueObject<T> {
+  protected constructor(props: T) {
+    super(props);
+  }
+}
+```
+
+#### 具体的な値オブジェクト実装例
+
+```typescript
+// プリミティブ型値オブジェクトの例
+export class SystemId extends PrimitiveValueObject<string> {
+  private constructor(value: string) {
+    super(value);
+  }
 
   public static create(value: string): Result<SystemId, ValidationError> {
     if (!value || value.length === 0) {
@@ -202,12 +488,52 @@ export class SystemId {
     };
   }
 
-  public equals(other: SystemId): boolean {
-    return this.value === other.value;
+  public toString(): string {
+    return this.value;
+  }
+}
+
+// 複合型値オブジェクトの例
+interface EmailProps {
+  localPart: string;
+  domain: string;
+}
+
+export class EmailAddress extends ValueObject<EmailProps> {
+  private constructor(props: EmailProps) {
+    super(props);
+  }
+
+  public static create(email: string): Result<EmailAddress, ValidationError> {
+    const emailRegex = /^([^@]+)@([^@]+)$/;
+    const match = email.match(emailRegex);
+
+    if (!match) {
+      return {
+        success: false,
+        error: new ValidationError('Invalid email format')
+      };
+    }
+
+    return {
+      success: true,
+      data: new EmailAddress({
+        localPart: match[1],
+        domain: match[2]
+      })
+    };
   }
 
   public toString(): string {
-    return this.value;
+    return `${this.props.localPart}@${this.props.domain}`;
+  }
+
+  public get localPart(): string {
+    return this.props.localPart;
+  }
+
+  public get domain(): string {
+    return this.props.domain;
   }
 }
 ```
@@ -467,9 +793,24 @@ export class SystemController {
 
 ### サービス
 
+#### アプリケーションサービス vs ドメインサービスの区別
+
+**アプリケーションサービス**: ユースケースの実行、外部システムとの連携、トランザクション制御、ドメインイベントによるモジュール間連携を担当
+**ドメインサービス**: 単一コンテキスト内の複数ドメインオブジェクト間の複雑なビジネスロジックを担当
+
 ```typescript
+// リポジトリインターフェース - 値オブジェクトを使用
+export interface SystemRepository {
+  findById(id: SystemId): Promise<SystemEntity | null>;
+  save(system: SystemEntity): Promise<SystemEntity>;
+  delete(id: SystemId): Promise<void>;
+  findByStatus(status: SystemStatus): Promise<SystemEntity[]>;
+  findAll(): Promise<SystemEntity[]>;
+}
+
+// アプリケーションサービス - ユースケースの実行と外部システムとの連携
 @Injectable()
-export class SystemService {
+export class SystemApplicationService {
   constructor(
     private readonly systemRepository: SystemRepository,
     private readonly eventBus: EventBus,
@@ -494,11 +835,13 @@ export class SystemService {
     systemData: CreateSystemData
   ): Promise<Result<System, CreateSystemError>> {
     try {
+      // ドメインオブジェクト生成
       const system = System.create(systemData);
       if (!system.success) {
         return { success: false, error: new CreateSystemError(system.error.message) };
       }
 
+      // 永続化
       const savedSystem = await this.systemRepository.save(system.data);
 
       // ドメインイベント発行
@@ -510,6 +853,176 @@ export class SystemService {
       return { success: false, error: new CreateSystemError('System creation failed') };
     }
   }
+
+  // モジュラーモノリス: ドメインイベントによる非同期連携
+  public async requestSystemRiskCalculation(systemId: string): Promise<Result<void, DomainError>> {
+    try {
+      const systemIdVO = SystemId.create(systemId);
+      if (!systemIdVO.success) {
+        return { success: false, error: new ValidationError('Invalid system ID') };
+      }
+
+      // システム情報を取得
+      const system = await this.systemRepository.findById(systemIdVO.data);
+      if (!system) {
+        return { success: false, error: new SystemNotFoundError(systemId) };
+      }
+
+      // ドメインイベント発行: 他のコンテキストに脆弱性データ要求
+      await this.eventBus.publish(new SystemRiskCalculationRequestedEvent({
+        systemId: systemIdVO.data,
+        requestId: RequestId.generate(),
+        requestedAt: new Date(),
+        systemCriticality: system.criticality.value,
+        exposureLevel: system.exposureLevel.value
+      }));
+
+      return { success: true, data: undefined };
+    } catch (error) {
+      this.logger.error('Failed to request risk calculation', error);
+      return { success: false, error: new DomainError('Risk calculation request failed') };
+    }
+  }
+
+  // イベントハンドラー: 他のコンテキストからの応答を処理
+  @EventHandler(VulnerabilityDataProvidedEvent)
+  public async handleVulnerabilityDataProvided(event: VulnerabilityDataProvidedEvent): Promise<void> {
+    try {
+      // システム情報を再取得
+      const system = await this.systemRepository.findById(event.systemId);
+      if (!system) {
+        this.logger.error(`System not found: ${event.systemId}`);
+        return;
+      }
+
+      // リスクスコア計算
+      const riskScore = this.calculateRiskScore(
+        system.criticality.value,
+        event.vulnerabilityScore,
+        system.exposureLevel.value
+      );
+
+      // リスクスコア更新
+      const updatedSystem = system.updateRiskScore(riskScore);
+      await this.systemRepository.save(updatedSystem);
+
+      // 計算完了イベント発行
+      await this.eventBus.publish(new SystemRiskCalculationCompletedEvent({
+        systemId: event.systemId,
+        requestId: event.requestId,
+        riskScore: riskScore.value,
+        calculatedAt: new Date()
+      }));
+
+    } catch (error) {
+      this.logger.error('Failed to process vulnerability data', error);
+    }
+  }
+
+  private calculateRiskScore(
+    systemCriticality: number,
+    vulnerabilityScore: number,
+    exposureLevel: number
+  ): RiskScore {
+    const totalRisk = systemCriticality * vulnerabilityScore * exposureLevel;
+    return RiskScore.create(totalRisk);
+  }
+}
+
+// ドメインサービス - 単一コンテキスト内の複雑なビジネスロジック
+export class SystemDomainService {
+  // システムコンテキスト内のビジネスルール
+  public calculateSystemCriticality(
+    systemType: SystemType,
+    businessImpact: BusinessImpact,
+    userCount: UserCount
+  ): SystemCriticality {
+    // システムタイプ、ビジネス影響度、利用者数から重要度を算出
+    let criticalityScore = systemType.baseScore;
+
+    if (businessImpact.isHigh()) {
+      criticalityScore *= 2;
+    }
+
+    if (userCount.isLarge()) {
+      criticalityScore *= 1.5;
+    }
+
+    return SystemCriticality.create(criticalityScore);
+  }
+
+  public validateSystemConfiguration(
+    system: SystemEntity,
+    requiredComponents: SystemComponent[]
+  ): Result<void, SystemConfigurationError> {
+    // システム構成の妥当性検証
+    const missingComponents = requiredComponents.filter(
+      component => !system.hasComponent(component)
+    );
+
+    if (missingComponents.length > 0) {
+      return {
+        success: false,
+        error: new SystemConfigurationError(
+          `Missing required components: ${missingComponents.map(c => c.name).join(', ')}`
+        )
+      };
+    }
+
+    return { success: true, data: undefined };
+  }
+}
+
+// ドメインイベント定義例
+export class SystemRiskCalculationRequestedEvent implements DomainEvent {
+  public readonly eventId: string = EventId.generate();
+  public readonly occurredAt: Date = new Date();
+  public readonly eventType: string = 'SystemRiskCalculationRequested';
+
+  constructor(
+    public readonly payload: {
+      systemId: SystemId;
+      requestId: RequestId;
+      requestedAt: Date;
+      systemCriticality: number;
+      exposureLevel: number;
+    }
+  ) {}
+}
+
+export class VulnerabilityDataProvidedEvent implements DomainEvent {
+  public readonly eventId: string = EventId.generate();
+  public readonly occurredAt: Date = new Date();
+  public readonly eventType: string = 'VulnerabilityDataProvided';
+
+  constructor(
+    public readonly payload: {
+      systemId: SystemId;
+      requestId: RequestId;
+      vulnerabilityScore: number;
+      vulnerabilityCount: number;
+      providedAt: Date;
+    }
+  ) {}
+
+  public get systemId(): SystemId { return this.payload.systemId; }
+  public get requestId(): RequestId { return this.payload.requestId; }
+  public get vulnerabilityScore(): number { return this.payload.vulnerabilityScore; }
+}
+
+export class SystemRiskCalculationCompletedEvent implements DomainEvent {
+  public readonly eventId: string = EventId.generate();
+  public readonly occurredAt: Date = new Date();
+  public readonly eventType: string = 'SystemRiskCalculationCompleted';
+
+  constructor(
+    public readonly payload: {
+      systemId: SystemId;
+      requestId: RequestId;
+      riskScore: number;
+      calculatedAt: Date;
+    }
+  ) {}
 }
 ```
 
