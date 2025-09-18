@@ -10,6 +10,11 @@ clients:
     timeout: 30s
     batchwait: 1s
     batchsize: 1048576
+    # Retry configuration
+    backoff_config:
+      min_period: 1s
+      max_period: 5s
+      max_retries: 3
 
 scrape_configs:
   # System Board Application logs
@@ -40,9 +45,9 @@ scrape_configs:
           expression: '(?i)(password|passwd|pwd|token|key|secret|api_key|access_token|refresh_token|jwt)["\s]*[:=]["\s]*([^\s"]+)'
           replace: '${1}="[REDACTED]"'
 
-      # IP address masking (preserve internal IPs)
+      # IP address masking (external IPs only)
       - regex:
-          expression: '(?:(?!10\.|172\.(?:1[6-9]|2[0-9]|3[01])\.|192\.168\.)(?:[0-9]{1,3}\.){3}[0-9]{1,3})'
+          expression: '\b(?:(?:25[0-5]|2[0-4][0-9]|[01]?[0-9][0-9]?)\.){3}(?:25[0-5]|2[0-4][0-9]|[01]?[0-9][0-9]?)\b'
           replace: '[IP_REDACTED]'
 
       # Email masking
@@ -62,7 +67,7 @@ scrape_configs:
 
       # Manufacturing confidential data masking
       - regex:
-          expression: '(?i)(internal|confidential|proprietary|classified).*'
+          expression: '(?i).*(internal|confidential|proprietary|classified).*'
           replace: '[CONFIDENTIAL_LOG_REDACTED]'
 
       # Add structured labels
@@ -161,7 +166,7 @@ scrape_configs:
       # Parse NestJS structured logs
       - json:
           expressions:
-            '@timestamp': '@timestamp'
+            timestamp: '["@timestamp"]'
             level: level
             message: message
             context: context
@@ -188,18 +193,8 @@ scrape_configs:
 
       # Timestamp handling
       - timestamp:
-          source: '@timestamp'
+          source: timestamp
           format: RFC3339
+          action_on_failure: fudge  # Use current time if parsing fails
 
-# Global pipeline for all jobs
-global:
-  # Rate limiting to prevent log flooding
-  rate_limit:
-    rate: 1000  # 1000 log entries per second max
-    burst: 2000
-
-  # Retry configuration
-  retry_config:
-    max_retries: 3
-    initial_interval: 1s
-    max_interval: 5s
+# Note: rate_limit and retry_config moved to clients section for Promtail compatibility

@@ -112,18 +112,39 @@ services:
     image: grafana/promtail:3.1.0
     container_name: system-board-promtail
     volumes:
-      - ./config/promtail:/etc/promtail
-      - logs_volume:/var/log/system-board
+      - ./config/promtail:/etc/promtail:ro
+      - ./logs:/var/log/system-board:rw
       - /var/lib/docker/containers:/var/lib/docker/containers:ro
       - /var/log:/var/log:ro
     command: -config.file=/etc/promtail/config.yml
     depends_on:
       - loki
+      - setup
     networks:
       - system-board
     user: "1000:1000"
     security_opt:
       - no-new-privileges:true
+    # Ensure the container can write to mounted volumes
+    cap_add:
+      - DAC_OVERRIDE
+
+  setup:
+    image: alpine:latest
+    container_name: system-board-setup
+    volumes:
+      - ./logs:/var/log/system-board
+    command: |
+      sh -c "
+        echo 'Setting up log directories...' &&
+        mkdir -p /var/log/system-board &&
+        chown 1000:1000 /var/log/system-board &&
+        chmod 755 /var/log/system-board &&
+        ls -la /var/log/system-board &&
+        echo 'Setup completed successfully'
+      "
+    user: root
+    restart: "no"
 
   grafana:
     image: grafana/grafana:11.2.0
@@ -178,7 +199,6 @@ volumes:
   loki_data:
   grafana_data:
   prometheus_data:
-  logs_volume:
 
 networks:
   system-board:
