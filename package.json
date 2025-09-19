@@ -1,7 +1,7 @@
 {
   "name": "system-board",
   "version": "0.1.0",
-  "description": "システムボード",
+  "description": "System Board - 製造業向けセキュリティリスク管理システム（脆弱性追跡・ライフサイクル管理）",
   "main": "index.js",
   "scripts": {
     "build": "turbo build",
