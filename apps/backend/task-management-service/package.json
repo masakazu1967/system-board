@@ -1,7 +1,7 @@
 {
   "name": "@system-board/task-management-service",
   "version": "0.0.1",
-  "description": "",
+  "description": "タスク管理サービス - システム管理タスクとワークフローの実行を担当",
   "author": {
     "name": "masakazu kobayashi",
     "email": "masakazu1967@yggdrasilroot.info"

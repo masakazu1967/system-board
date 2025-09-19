@@ -1,7 +1,7 @@
 {
   "name": "@system-board/task-management",
   "version": "0.0.1",
-  "description": "",
+  "description": "タスク管理共有パッケージ - タスク管理機能の共通ライブラリ",
   "author": {
     "name": "masakazu kobayashi",
     "email": "masakazu1967@yggdrasilroot.info"

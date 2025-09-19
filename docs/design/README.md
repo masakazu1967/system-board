@@ -130,7 +130,7 @@
 ### フロントエンド技術スタック
 
 - **Framework**: React 18+ with TypeScript
-- **Styling**: Tailwind CSS 3.4+ + CSS Custom Properties
+- **Styling**: Tailwind CSS 4+ + CSS Custom Properties
 - **State Management**: React Query + Zustand
 - **Animation**: Framer Motion
 - **Testing**: Jest + React Testing Library
@@ -240,7 +240,7 @@
 デザインに関するご質問やフィードバックは、以下の方法でお寄せください：
 
 - **GitHub Issues**: デザイン改善提案
-- **プロジェクトSlack**: #design-system チャンネル
+- **プロジェクトDiscord**: System Boardサーバー #design-system チャンネル
 - **メール**: <design-team@company.com>
 
 ---

@@ -1,6 +1,7 @@
 {
   "name": "@system-board/system-board",
   "version": "0.1.0",
+  "description": "System Board フロントエンド - セキュリティリスク管理システムのユーザーインターフェース",
   "private": true,
   "author": {
     "name": "masakazu kobayashi",

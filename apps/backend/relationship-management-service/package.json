@@ -1,7 +1,7 @@
 {
   "name": "@system-board/relationship-management-service",
   "version": "0.0.1",
-  "description": "",
+  "description": "関係管理サービス - システム間の依存関係と関連性の管理を担当",
   "author": {
     "name": "masakazu kobayashi",
     "email": "masakazu1967@yggdrasilroot.info"
