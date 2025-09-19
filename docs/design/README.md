@@ -139,8 +139,8 @@
 
 ### デザインツール
 
-- **UI Design**: Figma（推奨）
-- **Prototyping**: Figma + React Storybook
+- **UI Design**: 使用しない
+- **Prototyping**: React Storybook
 - **Icon System**: Heroicons + Custom Icons
 - **Design Tokens**: Style Dictionary
 
