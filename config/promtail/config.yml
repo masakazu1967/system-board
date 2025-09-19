@@ -1,0 +1,200 @@
+server:
+  http_listen_port: 9080
+  grpc_listen_port: 0
+
+positions:
+  filename: /tmp/positions.yaml
+
+clients:
+  - url: http://loki:3100/loki/api/v1/push
+    timeout: 30s
+    batchwait: 1s
+    batchsize: 1048576
+    # Retry configuration
+    backoff_config:
+      min_period: 1s
+      max_period: 5s
+      max_retries: 3
+
+scrape_configs:
+  # System Board Application logs
+  - job_name: system-board-app
+    static_configs:
+      - targets:
+          - localhost
+        labels:
+          job: system-board
+          service: application
+          environment: development
+          __path__: /var/log/system-board/*.log
+
+    pipeline_stages:
+      # Parse JSON structured logs
+      - json:
+          expressions:
+            timestamp: timestamp
+            level: level
+            message: message
+            error_id: error_id
+            stack_trace: stack_trace
+            service: service
+            context: context
+
+      # Security-focused data masking pipeline
+      - regex:
+          expression: '(?i)(password|passwd|pwd|token|key|secret|api_key|access_token|refresh_token|jwt)["\s]*[:=]["\s]*([^\s"]+)'
+          replace: '${1}="[REDACTED]"'
+
+      # IP address masking (external IPs only)
+      - regex:
+          expression: '\b(?:(?:25[0-5]|2[0-4][0-9]|[01]?[0-9][0-9]?)\.){3}(?:25[0-5]|2[0-4][0-9]|[01]?[0-9][0-9]?)\b'
+          replace: '[IP_REDACTED]'
+
+      # Email masking
+      - regex:
+          expression: '[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}'
+          replace: '[EMAIL_REDACTED]'
+
+      # Database connection string masking
+      - regex:
+          expression: '(postgresql|mysql|mongodb)://([^:]+):([^@]+)@'
+          replace: '${1}://[USER]:[REDACTED]@'
+
+      # CVE and vulnerability data preservation (important for security monitoring)
+      - regex:
+          expression: '(?i)(cve-[0-9]{4}-[0-9]+|cvss|vulnerability|exploit)'
+          replace: '${1}'  # Keep vulnerability information
+
+      # Manufacturing confidential data masking
+      - regex:
+          expression: '(?i).*(internal|confidential|proprietary|classified).*'
+          replace: '[CONFIDENTIAL_LOG_REDACTED]'
+
+      # Add structured labels
+      - labels:
+          level:
+          service:
+          error_id:
+
+      # Timestamp parsing
+      - timestamp:
+          source: timestamp
+          format: RFC3339Nano
+
+  # Docker container logs
+  - job_name: docker-containers
+    static_configs:
+      - targets:
+          - localhost
+        labels:
+          job: docker
+          __path__: /var/lib/docker/containers/*/*-json.log
+
+    pipeline_stages:
+      # Parse Docker JSON log format
+      - json:
+          expressions:
+            output: log
+            stream: stream
+            time: time
+
+      # Extract container info from path
+      - regex:
+          source: filename
+          expression: '/var/lib/docker/containers/(?P<container_id>[a-f0-9]{64})'
+
+      # Apply same security masking as application logs
+      - regex:
+          expression: '(?i)(password|token|key|secret)["\s]*[:=]["\s]*([^\s"]+)'
+          replace: '${1}="[REDACTED]"'
+
+      # Label extraction
+      - labels:
+          stream:
+          container_id:
+
+      # Output processing
+      - output:
+          source: output
+
+  # System logs (syslog, auth.log etc.)
+  - job_name: system-logs
+    static_configs:
+      - targets:
+          - localhost
+        labels:
+          job: syslog
+          service: system
+          __path__: /var/log/{syslog,auth.log,kern.log}
+
+    pipeline_stages:
+      # Syslog pattern matching
+      - regex:
+          expression: '^(?P<timestamp>\S+\s+\d+\s+\d+:\d+:\d+)\s+(?P<hostname>\S+)\s+(?P<service>\S+)(?:\[(?P<pid>\d+)\])?\:\s+(?P<message>.*)'
+
+      # Security event filtering
+      - match:
+          selector: '{job="syslog"}'
+          stages:
+            - regex:
+                expression: '(?i)(failed|error|authentication|sudo|su\s)'
+                replace: '${1}'
+
+      # System log labels
+      - labels:
+          hostname:
+          service:
+          pid:
+
+      # Timestamp formatting
+      - timestamp:
+          source: timestamp
+          format: 'Jan 02 15:04:05'
+
+  # NestJS application specific logs
+  - job_name: nestjs-app
+    static_configs:
+      - targets:
+          - localhost
+        labels:
+          job: nestjs
+          service: backend
+          framework: nestjs
+          __path__: /var/log/system-board/nestjs-*.log
+
+    pipeline_stages:
+      # Parse NestJS structured logs
+      - json:
+          expressions:
+            timestamp: '["@timestamp"]'
+            level: level
+            message: message
+            context: context
+            trace: trace
+            error_id: error_id
+            user_id: user_id
+            request_id: request_id
+
+      # NestJS specific security masking
+      - regex:
+          expression: '"user_id":"([^"]+)"'
+          replace: '"user_id":"[USER_ID_REDACTED]"'
+
+      # Request tracing preservation (for debugging)
+      - regex:
+          expression: '"request_id":"([a-f0-9-]+)"'
+          replace: '"request_id":"${1}"'  # Keep request IDs for tracing
+
+      # Add service-specific labels
+      - labels:
+          level:
+          context:
+          request_id:
+
+      # Timestamp handling
+      - timestamp:
+          source: timestamp
+          format: RFC3339
+          action_on_failure: fudge  # Use current time if parsing fails
+
+# Note: rate_limit and retry_config moved to clients section for Promtail compatibility
