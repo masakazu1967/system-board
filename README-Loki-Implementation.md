@@ -59,7 +59,7 @@ Located in `/apps/packages/logging/`, providing:
 ./scripts/loki-ops/setup.sh
 
 # Or manually start services
-docker-compose -f docker-compose.dev.yaml up -d loki promtail grafana prometheus
+docker compose --env-file .env.local -f docker-compose.dev.yaml up -d loki promtail grafana prometheus
 ```
 
 ### 2. Install Logging Package
