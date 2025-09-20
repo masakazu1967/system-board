@@ -26,7 +26,7 @@ System Boardプロジェクトは、セキュリティリスク管理システ�
 
 - **フロントエンド**: React + TypeScript
 - **バックエンド**: NestJS + TypeScript
-- **データベース**: PostgreSQL + EventStore DB + Redis
+- **データベース**: PostgreSQL + Kurrent DB + Redis
 - **インフラ**: Docker + Kubernetes
 - **監視**: Prometheus + Grafana + Grafana Loki
 
@@ -72,7 +72,7 @@ Sprint 26: 2026/10/03 - 2026/10/16 (Production Ready)
 - **ソフトウェアアーキテクト**: アーキテクチャ決定・技術ガイドライン
 - **フロントエンド開発者**: React/TypeScript実装
 - **バックエンド開発者**: NestJS/DDD実装
-- **データベースアーキテクト**: データモデル設計・EventStore設計
+- **データベースアーキテクト**: データモデル設計・Kurrent設計
 - **QAテスター**: テスト戦略・品質保証
 - **セキュリティエンジニア**: セキュリティ要件・OWASP対応
 - **DevOpsエンジニア**: CI/CD・インフラ自動化
@@ -246,7 +246,7 @@ Sprint 26: 2026/10/03 - 2026/10/16 (Production Ready)
 
 ### 7.1 技術的リスク
 
-- **新技術学習曲線**: EventStore DB、CQRS実装
+- **新技術学習曲線**: Kurrent DB、CQRS実装
 - **統合複雑性**: 複数データストア間の整合性
 - **パフォーマンス**: イベントソーシングの性能最適化
 

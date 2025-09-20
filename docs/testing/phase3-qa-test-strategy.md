@@ -492,9 +492,9 @@ describe('Data Consistency Validation', () => {
 describe('Business Continuity & Disaster Recovery', () => {
   
   it('should activate emergency read-only mode on database failure', async () => {
-    // PostgreSQLとEventStoreの両方を停止
+    // PostgreSQLとKurrentの両方を停止
     await mockDatabase.disconnect();
-    await mockEventStore.disconnect();
+    await mockKurrent.disconnect();
     
     const healthCheck = await systemHealth.checkAll();
     

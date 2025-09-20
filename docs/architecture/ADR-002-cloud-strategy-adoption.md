@@ -115,7 +115,7 @@ System Boardプロジェクトでは、当初オンプレミス環境での構�
 ### データベース戦略
 
 - **PostgreSQL**: クラウドマネージドサービス採用（RDS/Azure Database等）
-- **EventStore DB**: コンテナベース自己管理 + クラウド最適化
+- **Kurrent DB**: コンテナベース自己管理 + クラウド最適化
 - **Redis**: マネージドサービス採用推奨（ElastiCache/Azure Cache等）
 
 ### 監視・運用サービス

@@ -136,7 +136,7 @@
 
 - **役割**: 定期脆弱性スキャン、CVSS評価、自動リスク判定
 - **動作トリガー**: 日次スケジュール、新規CVE情報受信
-- **実装**: NestJS Scheduled Tasks + EventStore DB
+- **実装**: NestJS Scheduled Tasks + Kurrent DB
 
 #### Task Engine Actor
 
@@ -154,7 +154,7 @@
 
 - **役割**: システム監視、ヘルスチェック、障害検知
 - **動作トリガー**: 5分間隔、閾値超過、異常検知
-- **実装**: Prometheus + Grafana + EventStore
+- **実装**: Prometheus + Grafana + Kurrent
 
 #### Integration Gateway Actor
 

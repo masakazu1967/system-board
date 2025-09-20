@@ -137,7 +137,7 @@ export class DatabaseException extends InfrastructureException {
   readonly severity = ErrorSeverity.HIGH;
 }
 
-export class EventStoreException extends InfrastructureException {
+export class KurrentException extends InfrastructureException {
   readonly code = 'EVENT_STORE_ERROR';
   readonly severity = ErrorSeverity.HIGH;
 }
@@ -368,7 +368,7 @@ export class RegisterSystemHandler implements ICommandHandler<RegisterSystemComm
       return;
     }
 
-    if (error instanceof EventStoreException) {
+    if (error instanceof KurrentException) {
       // Attempt to clean up any partial state
       try {
         await this.systemRepository.delete(new SystemId(command.systemData.id));
@@ -771,7 +771,7 @@ package "Primary Services" as PS #LightGreen {
   [GitHub API] as GitHub
   [NVD API] as NVD
   [EndOfLife API] as EOL
-  [EventStore DB] as EventStore
+  [Kurrent DB] as Kurrent
   [PostgreSQL] as Postgres
 }
 
@@ -779,7 +779,7 @@ package "Fallback Services" as FS #LightYellow {
   [Manual Input UI] as Manual
   [Cached CVE Data] as Cache
   [Local EOL Database] as LocalEOL
-  [Backup EventStore] as BackupES
+  [Backup Kurrent] as BackupES
   [Read-Only Mode] as ReadOnly
 }
 
@@ -792,7 +792,7 @@ package "Fallback Controller" as FC #LightBlue {
 GitHub -x-> Manual : API failure
 NVD -x-> Cache : Rate limit exceeded
 EOL -x-> LocalEOL : Service unavailable
-EventStore -x-> BackupES : Primary down
+Kurrent -x-> BackupES : Primary down
 Postgres -x-> ReadOnly : Database issues
 
 Monitor --> Orchestrator : Health status
@@ -831,7 +831,7 @@ export class FallbackService {
     this.fallbackStrategies.set('nvd', new NVDFallbackStrategy());
     this.fallbackStrategies.set('endoflife', new EndOfLifeFallbackStrategy());
     this.fallbackStrategies.set('database', new DatabaseFallbackStrategy());
-    this.fallbackStrategies.set('eventstore', new EventStoreFallbackStrategy());
+    this.fallbackStrategies.set('kurrent', new KurrentFallbackStrategy());
   }
 
   async activateGitHubFallback(repositoryUrl: string, error: ExternalApiException): Promise<void> {

@@ -139,10 +139,10 @@ VC -> EB: VulnerabilityScanTriggeredEvent
 ## Event Store Schema
 
 ```plantuml
-@startuml EventStoreSchema
+@startuml KurrentSchema
 !theme plain
 
-class EventStore {
+class Kurrent {
   +stream_id: UUID
   +event_type: String
   +event_data: JSONB
@@ -167,8 +167,8 @@ class Snapshot {
   +created_at: Timestamp
 }
 
-EventStore ||--|| StreamMetadata
-EventStore ||--o{ Snapshot
+Kurrent ||--|| StreamMetadata
+Kurrent ||--o{ Snapshot
 
 @enduml
 ```

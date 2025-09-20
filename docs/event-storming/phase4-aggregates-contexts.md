@@ -415,97 +415,209 @@ class EOLAPIAntiCorruptionLayer {
 
 #### モジュラーモノリス実装構造
 
+**System Management Context**:
+
+*Domain*:
+
 ```text
 /src
-  /contexts
-    /system-management/
-      /domain/
-        - system.aggregate.ts
-        - package.entity.ts
-        - host-configuration.value-object.ts
-        - system-name.value-object.ts
-        - security-classification.value-object.ts
-      /application/
-        - system.service.ts
-        - register-system.handler.ts
-        - update-system-configuration.handler.ts
-        - system.queries.ts
-        - system.dto.ts
-      /infrastructure/
-        - system.repository.ts
-        - github-api.client.ts
-        - system.controller.ts
-      - system.module.ts
+  /system-management/
+    /domain/
+      /model/
+        - SystemAggregate.ts
+        - PackageEntity.ts
+        - HostConfigurationValueObject.ts
+        - SystemNameValueObject.ts
+        - SecurityClassificationValueObject.ts
+      /service/ # ドメインサービス
+        - SystemRepository.ts
+    /application/
+      - SystemService.ts
+      - RegisterSystemHandler.ts
+      - UpdateSystemConfigurationHandler.ts
+      - SystemQueries.ts
+      - SystemDto.ts
+    - SystemModule.ts
+```
 
-    /vulnerability-management/
-      /domain/
-        - vulnerability.aggregate.ts
-        - risk-assessment.entity.ts
-        - cvss-score.value-object.ts
-        - vulnerability-severity.value-object.ts
-      /application/
-        - vulnerability.service.ts
-        - detect-vulnerability.handler.ts
-        - assess-risk.handler.ts
-        - vulnerability.queries.ts
-      /infrastructure/
-        - vulnerability.repository.ts
-        - nvd-api.client.ts
-        - vulnerability.controller.ts
-      - vulnerability.module.ts
+*Infrastructure*:
 
-    /task-management/
-      /domain/
-        - task.aggregate.ts
-        - workflow.aggregate.ts
-        - task-status.value-object.ts
-        - task-priority.value-object.ts
-      /application/
-        - task.service.ts
-        - create-task.handler.ts
-        - assign-task.handler.ts
-        - task.queries.ts
-        - workflow.orchestrator.ts
-      /infrastructure/
-        - task.repository.ts
-        - notification.service.ts
-        - task.controller.ts
-      - task.module.ts
+```text
+/src
+  /system-management/
+    /infrastructure/
+      - KurrentSystemRepository.ts
+      - GithubApiClient.ts
+    - KurrentSystemModule.ts
+```
 
-    /relationship-management/
-      /domain/
-        - system-dependency.aggregate.ts
-        - impact-analysis.entity.ts
-        - dependency-type.value-object.ts
-      /application/
-        - relationship.service.ts
-        - map-dependency.handler.ts
-        - analyze-impact.handler.ts
-        - relationship.queries.ts
-      /infrastructure/
-        - relationship.repository.ts
-        - relationship.controller.ts
-      - relationship.module.ts
+*Presentatioin*:
 
+```text
+/src
+  /system-management/
+    /presentation/
+      - SystemController.ts
+    - SystemServiceModule.ts
+  - AppModule.ts
+```
+
+**Vulnerability Management Context**:
+
+*Domain*:
+
+```text
+/src
+  /vulnerability-management/
+    /domain/
+      /model/
+        - VulnerabilityAggregate.ts
+        - RiskAssessmentEntity.ts
+        - CvssScoreValueObject.ts
+        - VulnerabilitySeverityValueObject.ts
+      /service/
+        - VulnerabilityRepository.ts
+    /application/
+      - VulnerabilityService.ts
+      - DetectVulnerabilityHandler.ts
+      - AssessRiskHandler.ts
+      - VulnerabilityQueries.ts
+    - VulnerabilityModule.ts
+```
+
+*Infrastructure*:
+
+```text
+/src
+  /vulnerability-management/
+    /infrastructure/
+      - KurrentVulnerabilityRepository.ts
+    - KurrentVulnerabilityModule.ts
+```
+
+*Presentatioin*:
+
+```text
+/src
+  /vulnerability-management/
+    /presentation/
+      - VulnerabilityController.ts
+    - VulnerabilityServiceModule.ts
+  - AppModule.ts
+```
+
+**Task Management Context**:
+
+*Domain*:
+
+```text
+/src
+  /task-management/
+    /domain/
+      /model/
+        - TaskAggregate.ts
+        - WorkflowAggregate.ts
+        - TaskStatusValueObject.ts
+        - TaskPriorityValueObject.ts
+      /service/
+        - TaskRepository.ts
+    /application/
+      - TaskService.ts
+      - CreateTaskHandler.ts
+      - AssignTaskHandler.ts
+      - TaskQueries.ts
+      - WorkflowOrchestrator.ts
+    - TaskModule.ts
+```
+
+*Infrastructure*:
+
+```text
+/src
+  /task-management/
+    /infrastructure/
+      - KurrentTaskRepository.ts
+      - NotificationService.ts
+    - KurrentTaskModule.ts
+```
+
+*Presentatioin*:
+
+```text
+/src
+  /task-management/
+    /presentation/
+      - TaskController.ts
+    - TaskServiceModule.ts
+  - AppModule.ts
+```
+
+**Relationship Management Context**:
+
+*Domain*:
+
+```text
+/src
+  /relationship-management/
+    /domain/
+      /model/
+        - SystemDependencyAggregate.ts
+        - ImpactAnalysisEntity.ts
+        - DependencyTypeValueObject.ts
+      /service/
+        - RelationshipRepository.ts
+    /application/
+      - RelationshipService.ts
+      - MapDependencyHandler.ts
+      - AnalyzeImpactHandler.ts
+      - RelationshipQueries.ts
+    - RelationshipModule.ts
+```
+
+*Infrastructure*:
+
+```text
+/src
+  /relationship-management/
+    /infrastructure/
+      - KurrentRelationshipRepository.ts
+    - KurrentRelationshipModule.ts
+```
+
+*Presentatioin*:
+
+```text
+/src
+  /relationship-management/
+    /presentation/
+      - RelationshipController.ts
+    - RelationshipServiceModule.ts
+  - AppModule.ts
+```
+
+**Shared Kernel**:
+
+*Domain*:
+
+```text
+/src
   /shared/
     /domain/
-      - shared-kernel.ts
-      - domain-event.interface.ts
-      - aggregate-root.abstract.ts
-      - entity.abstract.ts
-      - value-object.abstract.ts
+      - SharedKernel.ts
+      - DomainEventInterface.ts
+      - AggregateRootAbstract.ts
+      - EntityAbstract.ts
+      - ValueObjectAbstract.ts
     /application/
-      - event-bus.ts
-      - command.interface.ts
-      - query.interface.ts
-      - saga.abstract.ts
+      - EventBus.ts
+      - CommandIinterface.ts
+      - QueryInterface.ts
+      - SagaAbstract.ts
     /infrastructure/
-      - repository.interface.ts
-      - event-store.client.ts
-      - postgresql.client.ts
-      - redis.client.ts
-
-  /app.module.ts
+      - RepositoryInterface.ts
+      - KurrentClient.ts
+      - PostgresqlClient.ts
+      - RedisClient.ts
 ```
 
 #### Module間通信パターン
@@ -516,11 +628,11 @@ class EOLAPIAntiCorruptionLayer {
 export class DomainEventBus {
   constructor(
     private readonly eventBus: EventBus,
-    private readonly eventStore: EventStoreClient
+    private readonly eventStore: KurrentClient
   ) {}
 
   async publish(event: DomainEvent): Promise<void> {
-    // Persist to Event Store
+    // Persist to Kurrent
     await this.eventStore.saveEvent(event);
 
     // Publish for immediate processing
@@ -565,40 +677,383 @@ export class VulnerabilityDetectedHandler {
 
 ### 3.1 強整合性境界 (Strong Consistency)
 
-#### ACID Transactions Required
+#### Limited ACID Requirements
 
-**Aggregate内の強整合性**:
+**真に強整合性が必要な操作（PostgreSQL）**:
 
 ```typescript
-// System Aggregate内でのトランザクション境界
+// ドメインサービス: ビジネスルール実装
+class SystemUniquenessService {
+  constructor(
+    private readonly systemRepository: SystemRepository
+  ) {}
+
+  async isUnique(system: System, tx?: Transaction): Promise<boolean> {
+    // ドメイン知識: システムの一意性はシステム名で判定される
+    const existingSystem = await this.systemRepository.findByName(system.name, tx);
+
+    return existingSystem === null;
+  }
+}
+
+// System集約用Repository（集約ルート専用）
 class SystemRepository {
-  async save(system: System): Promise<void> {
-    return this.database.transaction(async (trx) => {
-      // System基本情報
-      await trx('systems').insert(system.getSystemData());
+  async findByName(systemName: SystemName, tx?: Transaction): Promise<System | null> {
+    if (tx) {
+      // 強整合性が必要な場合: Read Modelから検索（排他制御）
+      const systemData = await tx('systems')
+        .where('name', systemName.value)
+        .forUpdate()
+        .first();
 
-      // パッケージ情報（同時更新必須）
-      await trx('packages').insert(system.getPackages());
+      if (!systemData) {
+        return null;
+      }
 
-      // ホスト設定（同時更新必須）
-      await trx('host_configurations').insert(system.getHostConfiguration());
+      // Event Storeから最新状態復元（一貫性保証）
+      return await this.getById(new SystemId(systemData.id));
+    } else {
+      // 通常検索: Event Store直接検索（結果整合性許容）
+      return await this.findByNameFromEventStore(systemName);
+    }
+  }
 
-      // ドメインイベント保存
-      await trx('domain_events').insert(system.getUncommittedEvents());
+  private async findByNameFromEventStore(systemName: SystemName): Promise<System | null> {
+    // Event Store Projectionを活用した効率的検索
+    const systemStreams = await this.kurrent.queryStreams({
+      streamCategory: 'system',
+      whereEvent: 'SystemRegistered',
+      whereData: { name: systemName.value }
     });
+
+    if (systemStreams.length === 0) {
+      return null;
+    }
+
+    // 最初に見つかったシステムの最新状態を復元
+    const events = await this.kurrent.readStreamEvents(systemStreams[0]);
+    return System.fromHistory(events);
+  }
+
+  async getById(systemId: SystemId): Promise<System> {
+    const events = await this.kurrent.readStreamEvents(`system-${systemId.value}`);
+    return System.fromHistory(events);
+  }
+
+  async save(system: System): Promise<void> {
+    await this.kurrent.appendToStream(
+      `system-${system.id.value}`,
+      system.expectedVersion,
+      system.getUncommittedEvents()
+    );
+  }
+}
+
+// システム名予約専用（技術的制約対応）
+class SystemNameReservationRepository {
+  async reserve(systemName: SystemName, tx?: Transaction): Promise<void> {
+    await (tx || this.database)('system_name_reservations').insert({
+      name: systemName.value,
+      reserved_at: new Date(),
+      expires_at: new Date(Date.now() + 5 * 60 * 1000) // 5分で期限切れ
+    });
+  }
+}
+
+// アプリケーションサービス: ユースケース調整
+class RegisterSystemApplicationService {
+  constructor(
+    private readonly systemUniquenessService: SystemUniquenessService,
+    private readonly systemRepository: SystemRepository,
+    private readonly systemNameReservationRepository: SystemNameReservationRepository,
+    private readonly transactionManager: TransactionManager
+  ) {}
+
+  async registerSystem(command: RegisterSystemCommand): Promise<void> {
+    // 1. Aggregate生成
+    const system = System.register(command);
+
+    // 2. 強整合性チェック（必要な場合のみ）
+    await this.transactionManager.execute(async (tx) => {
+      const isUnique = await this.systemUniquenessService.isUnique(system, tx);
+
+      if (!isUnique) {
+        throw new SystemAlreadyExistsError(system.name);
+      }
+
+      // 同時登録防止用の技術的制約
+      await this.systemNameReservationRepository.reserve(system.name, tx);
+    });
+
+    // 3. Event Sourcing（Kurrent）
+    await this.systemRepository.save(system);
   }
 }
 ```
 
-**強整合性が必要なデータ**:
+**限定的な強整合性要件**:
 
-- System Aggregate: システム情報+パッケージ+ホスト設定
-- Vulnerability Aggregate: 脆弱性情報+リスク評価+影響システム
-- Task Aggregate: タスク状態+割当+進捗履歴
+- **システム名一意性**: 同時登録・名前変更時の重複防止が必須
+  - 理由: 結果整合性では競合状態で重複システム名が登録される
+  - 例: ユーザーA・Bが同時に「WebServer」で登録 → 両方成功（重複発生）
+
+- **状態遷移制御**: 廃止システムの操作防止のみ
+  - 理由: 廃止後の操作は業務ルール違反
+
+#### 競合状態の具体例
+
+```typescript
+// ❌ 結果整合性での問題発生パターン
+async function problematicConcurrentRegistration() {
+  // 時刻T1: 2つのリクエストが並行実行
+  const [resultA, resultB] = await Promise.all([
+    // ユーザーA: 「WebServer」で登録
+    registerSystemUseCase.execute({ name: 'WebServer', type: 'WEB' }),
+
+    // ユーザーB: 「WebServer」で登録
+    registerSystemUseCase.execute({ name: 'WebServer', type: 'API' })
+  ]);
+
+  // 両方とも成功してしまう → システム名重複発生
+  console.log(resultA); // ✅ SystemId: sys-001, Name: WebServer
+  console.log(resultB); // ✅ SystemId: sys-002, Name: WebServer (重複！)
+}
+
+// ✅ 強整合性での解決
+async function safeSequentialExecution() {
+  try {
+    // ユーザーA: 成功
+    const resultA = await registerSystemUseCase.execute({
+      name: 'WebServer', type: 'WEB'
+    });
+
+    // ユーザーB: 重複エラーで失敗
+    const resultB = await registerSystemUseCase.execute({
+      name: 'WebServer', type: 'API'
+    });
+  } catch (error) {
+    console.log(error); // SystemNameAlreadyExistsError: WebServer
+  }
+}
+```
+
+#### 同時登録防止メカニズムの詳細
+
+```typescript
+// 同時登録防止の仕組み解説
+class RegisterSystemApplicationService {
+  async registerSystem(command: RegisterSystemCommand): Promise<void> {
+    const system = System.register(command);
+
+    // ===== 強整合性による重複防止 =====
+    await this.transactionManager.execute(async (tx) => {
+      // STEP 1: 排他ロックによる一意性チェック
+      const isUnique = await this.systemUniquenessService.isUnique(system, tx);
+      // → tx('systems').where('name', name).forUpdate() で排他ロック取得
+      // → 他の同時トランザクションはここで待機状態になる
+
+      if (!isUnique) {
+        throw new SystemAlreadyExistsError(system.name);
+      }
+
+      // STEP 2: 名前予約による二重防止
+      await this.systemNameReservationRepository.reserve(system.name, tx);
+      // → system_name_reservations テーブルに INSERT
+      // → 同じ名前の同時登録は UNIQUE 制約で失敗
+
+      // ここまでが原子的操作（COMMIT/ROLLBACK単位）
+    });
+
+    // STEP 3: Event Store への永続化
+    await this.systemRepository.save(system);
+    // → Kurrent に SystemRegistered イベント保存
+    // → Read Model は非同期で更新（結果整合性）
+  }
+}
+
+// 同時実行時のシーケンス例
+/*
+Time | Transaction A           | Transaction B           | 結果
+-----|------------------------|------------------------|--------
+T1   | BEGIN                  | BEGIN                  |
+T2   | SELECT ... FOR UPDATE  | SELECT ... FOR UPDATE  | A:ロック取得,B:待機
+T3   | isUnique() → true      | (待機中)               | A:チェック通過
+T4   | INSERT reservation     | (待機中)               | A:予約成功
+T5   | COMMIT                 | (待機中)               | A:トランザクション完了
+T6   | (完了)                 | isUnique() → false     | B:重複検出
+T7   | (完了)                 | ROLLBACK               | B:登録失敗
+T8   | save to Kurrent        | SystemAlreadyExistsError| A:成功,B:エラー
+*/
+```
+
+#### 予約テーブルの役割と設計
+
+```typescript
+// システム名予約テーブル設計
+CREATE TABLE system_name_reservations (
+  name VARCHAR(255) PRIMARY KEY,        -- システム名（一意制約）
+  reserved_at TIMESTAMP NOT NULL,       -- 予約時刻
+  expires_at TIMESTAMP NOT NULL,        -- 予約期限（5分後）
+  reserved_by VARCHAR(255),             -- 予約者（オプション）
+
+  INDEX idx_expires_at (expires_at)     -- 期限切れクリーンアップ用
+);
+
+// 予約テーブルの自動クリーンアップ
+@Cron('*/1 * * * *') // 1分ごと実行
+async cleanupExpiredReservations(): Promise<void> {
+  await this.database('system_name_reservations')
+    .where('expires_at', '<', new Date())
+    .delete();
+}
+
+// 予約の仕組み
+class SystemNameReservationRepository {
+  async reserve(systemName: SystemName, tx?: Transaction): Promise<void> {
+    try {
+      await (tx || this.database)('system_name_reservations').insert({
+        name: systemName.value,
+        reserved_at: new Date(),
+        expires_at: new Date(Date.now() + 5 * 60 * 1000) // 5分期限
+      });
+    } catch (error) {
+      if (error.code === '23505') { // UNIQUE制約違反
+        throw new SystemNameReservationConflictError(systemName);
+      }
+      throw error;
+    }
+  }
+}
+```
+
+#### 重複防止の多層防御
+
+```mermaid
+sequenceDiagram
+    participant U1 as User A
+    participant U2 as User B
+    participant App as Application Service
+    participant DB as PostgreSQL
+    participant ES as Kurrent Store
+
+    Note over U1,U2: 同時に「WebServer」システム登録
+
+    U1->>App: registerSystem("WebServer")
+    U2->>App: registerSystem("WebServer")
+
+    Note over App,DB: トランザクション開始
+    App->>DB: BEGIN TRANSACTION A
+    App->>DB: BEGIN TRANSACTION B
+
+    Note over App,DB: 排他ロックによる一意性チェック
+    App->>DB: SELECT * FROM systems WHERE name='WebServer' FOR UPDATE (TX-A)
+    App->>DB: SELECT * FROM systems WHERE name='WebServer' FOR UPDATE (TX-B)
+
+    Note over DB: TX-Aがロック取得、TX-Bは待機
+    DB-->>App: OK (TX-A), WAITING (TX-B)
+
+    Note over App,DB: 予約テーブルへの登録
+    App->>DB: INSERT INTO reservations VALUES('WebServer') (TX-A)
+    DB-->>App: SUCCESS (TX-A)
+
+    App->>DB: COMMIT (TX-A)
+    DB-->>App: COMMITTED (TX-A)
+
+    Note over DB: TX-Bの処理再開
+    DB-->>App: FOUND EXISTING 'WebServer' (TX-B)
+
+    App->>DB: ROLLBACK (TX-B)
+
+    Note over App: TX-Aのみイベント保存
+    App->>ES: SaveEvent(SystemRegistered, "WebServer")
+    ES-->>App: SUCCESS
+
+    App-->>U1: SUCCESS
+    App-->>U2: ERROR: SystemAlreadyExists
+```
+
+この多層防御により、同時登録でも重複を完全に防止できます。
+
+#### Event Sourcing Repository (Kurrent)
+
+**Aggregate状態管理（Kurrent中心）**:
+
+```typescript
+// Event Sourcing準拠のSystem Repository
+class KurrentSystemRepository {
+  async save(system: System): Promise<void> {
+    // Aggregateの不変条件チェック（保存前）
+    system.validateInvariants();
+
+    // システム名一意性は別Repository（PostgreSQL）で保証
+    if (system.isNew()) {
+      await this.uniquenessRepository.ensureSystemNameUniqueness(system.name);
+    }
+
+    // Kurrentへの原子的なイベント追記
+    await this.kurrent.appendToStream(
+      `system-${system.id}`,
+      system.expectedVersion,
+      system.getUncommittedEvents()
+    );
+
+    // Read Modelは非同期Projectionで更新（結果整合性）
+  }
+
+  async getById(systemId: SystemId): Promise<System> {
+    // Event Storeから直接状態復元
+    const events = await this.kurrent.readStreamEvents(`system-${systemId}`);
+    return System.fromHistory(events);
+  }
+}
+
+// Aggregate内での強整合性保証
+class System extends AggregateRoot {
+  installPackage(packageData: PackageData): void {
+    // 事前条件チェック（ドメイン層）
+    if (this.status === SystemStatus.DECOMMISSIONED) {
+      throw new DecommissionedSystemError('Cannot install package on decommissioned system');
+    }
+
+    // 不変条件チェック
+    if (this.packages.some(p => p.name === packageData.name)) {
+      throw new PackageAlreadyInstalledError(packageData.name);
+    }
+
+    // イベント生成（同期的）
+    this.addEvent(new PackageInstalled({
+      systemId: this.id,
+      package: packageData,
+      installedAt: new Date()
+    }));
+  }
+
+  // 状態復元時の整合性チェック
+  static fromHistory(events: DomainEvent[]): System {
+    const system = new System();
+
+    for (const event of events) {
+      system.apply(event);
+      // 各イベント適用後に不変条件チェック
+      system.validateInvariants();
+    }
+
+    return system;
+  }
+
+  private validateInvariants(): void {
+    // アクティブシステムのパッケージ要件（結果整合性許容）
+    // 一時的に0個でも業務継続可能
+    if (this.status === SystemStatus.ACTIVE && this.packages.length === 0) {
+      this.addWarning(new SystemWithoutPackagesWarning(this.id));
+    }
+  }
+}
+```
 
 ### 3.2 結果整合性境界 (Eventual Consistency)
 
-#### Cross-Context Event Integration
+#### Event-Driven Aggregate Coordination
 
 ```typescript
 // Saga Orchestration for Cross-Context Consistency
@@ -658,13 +1113,16 @@ export class VulnerabilityResponseSaga {
 
 **結果整合性で十分なデータ**:
 
-- Context間のイベント連携（数秒～数分の遅延許容）
-- 外部API同期データ（数時間の遅延許容）
-- レポーティング用データ（日次更新で十分）
+- **System-Package-Host関係**: 一時的な不整合は業務継続に影響なし
+- **Context間のイベント連携**: 数秒～数分の遅延許容
+- **外部API同期データ**: 数時間の遅延許容
+- **Read Model更新**: リアルタイム性不要、数秒遅延許容
+- **レポーティング用データ**: 日次更新で十分
 
-### 3.3 整合性チェック・修復機能
+#### データ修復メカニズム
 
 ```typescript
+// 結果整合性の保証と修復
 @Injectable()
 export class DataConsistencyService {
   // 定期整合性チェック（日次実行）
@@ -684,27 +1142,129 @@ export class DataConsistencyService {
 
   private async detectInconsistencies(): Promise<DataInconsistency[]> {
     return [
-      ...await this.checkSystemPackageConsistency(),
-      ...await this.checkVulnerabilityReferenceConsistency(),
-      ...await this.checkTaskSystemReferenceConsistency()
+      ...await this.checkSystemPackageConsistency(),  // 結果整合性チェック
+      ...await this.checkReadModelSyncStatus(),       // Projection遅延チェック
+      ...await this.checkCrossContextReferences()     // Context間参照整合性
     ];
   }
 
+  // 自動修復可能な不整合
   private async autoRepair(inconsistency: DataInconsistency): Promise<void> {
     switch (inconsistency.type) {
-      case 'system_package_mismatch':
-        await this.repairSystemPackageMismatch(inconsistency);
+      case 'system_without_packages':
+        await this.repairSystemPackageRelation(inconsistency);
         break;
-      case 'vulnerability_reference_invalid':
-        await this.repairVulnerabilityReference(inconsistency);
+      case 'stale_read_model':
+        await this.replayProjection(inconsistency);
         break;
-      case 'task_system_reference_missing':
-        await this.repairTaskSystemReference(inconsistency);
+      case 'orphaned_context_reference':
+        await this.cleanupOrphanedReference(inconsistency);
         break;
+    }
+  }
+
+  // System-Package関係の修復
+  private async repairSystemPackageRelation(inconsistency: DataInconsistency): Promise<void> {
+    const systemId = inconsistency.affectedSystemId;
+
+    // Kurrentから最新状態を取得
+    const systemEvents = await this.kurrent.readStreamEvents(`system-${systemId}`);
+    const system = System.fromHistory(systemEvents);
+
+    // Read Modelの再構築
+    await this.systemProjection.rebuildSystemReadModel(system);
+
+    // 警告の解除（業務継続に支障なし）
+    await this.clearSystemWarnings(systemId);
+  }
+}
+```
+
+### 3.3 PostgreSQL用途の限定
+
+#### Read Model専用設計
+
+```typescript
+// PostgreSQLは Read Model と強整合性要件のみ
+@Module({
+  providers: [
+    // Transaction Management
+    TransactionManager,
+
+    // 集約ルート Repository（DDDに準拠）
+    SystemRepository,
+    VulnerabilityRepository,
+    TaskRepository,
+
+    // 技術的制約対応用Repository（集約ルートではない）
+    SystemNameReservationRepository,
+
+    // 強整合性用ドメインサービス（ビジネスルール）
+    SystemUniquenessService,
+    SystemStateTransitionService,
+
+    // Read Model専用 (Event Projectionで更新)
+    SystemReadModelRepository,
+    VulnerabilityReadModelRepository,
+    TaskReadModelRepository,
+
+    // Event Projection Services
+    SystemProjectionService,
+    VulnerabilityProjectionService,
+    TaskProjectionService
+  ]
+})
+export class PostgreSQLModule {}
+
+// Event Projection例
+@EventHandler(PackageInstalled)
+class SystemProjectionHandler {
+  async handle(event: PackageInstalled): Promise<void> {
+    // 非同期でRead Model更新（結果整合性）
+    await this.retryWithBackoff(async () => {
+      await this.systemReadModel.addPackage(
+        event.systemId,
+        event.package
+      );
+    });
+  }
+
+  private async retryWithBackoff(operation: () => Promise<void>): Promise<void> {
+    const maxRetries = 3;
+    let attempt = 0;
+
+    while (attempt < maxRetries) {
+      try {
+        await operation();
+        return;
+      } catch (error) {
+        attempt++;
+        if (attempt === maxRetries) throw error;
+        await this.delay(Math.pow(2, attempt) * 1000);
+      }
     }
   }
 }
 ```
+
+#### アーキテクチャ整理
+
+**Kurrent DB (Event Store)**:
+
+- 全てのAggregate状態管理
+- ドメインイベント永続化
+- 状態復元の真のソース
+
+**PostgreSQL**:
+
+- Read Model（Queryに最適化）
+- システム名一意性制御のみ
+- 状態遷移制御のみ
+
+**Redis**:
+
+- キャッシュ
+- セッション管理
 
 ---
 
@@ -718,19 +1278,19 @@ export class DataConsistencyService {
 @Module({
   imports: [
     CqrsModule,
-    EventStoreModule.forRoot({
-      connectionString: process.env.EVENTSTORE_CONNECTION_STRING,
+    KurrentModule.forRoot({
+      connectionString: process.env.KURRENT_CONNECTION_STRING,
       settings: {
         defaultUserCredentials: {
           username: 'admin',
-          password: process.env.EVENTSTORE_PASSWORD
+          password: process.env.KURRENT_PASSWORD
         }
       }
     })
   ],
   providers: [
     DomainEventBus,
-    EventStoreProjectionService,
+    KurrentProjectionService,
     // Event Handlers
     SystemRegisteredHandler,
     VulnerabilityDetectedHandler,
@@ -1045,7 +1605,7 @@ rectangle "Application Services" as AppServices #LightGray {
 }
 
 rectangle "Infrastructure" as Infra #LightGray {
-  database "EventStore DB" as ES {
+  database "Kurrent DB" as ES {
     [Event Streams]
     [Snapshots]
   }
@@ -1069,15 +1629,20 @@ AppServices --> SK : uses domain
 Infra --> AppServices : supports
 
 ' Data consistency levels
-rectangle "Strong Consistency (ACID)" as SC #Red {
-  note right: Within Aggregate boundaries\nSystem + Packages + Host\nVulnerability + Risk Assessment\nTask + Status + Assignment
+rectangle "Limited Strong Consistency (ACID)" as SC #Red {
+  note right: System name uniqueness only\nStatus transition control only\nMinimal ACID usage
+}
+
+rectangle "Event Sourcing (Kurrent)" as ES #Green {
+  note right: All Aggregate state\nDomain events\nOptimistic concurrency
 }
 
 rectangle "Eventual Consistency" as EC #Blue {
-  note right: Cross-Context events\nExternal API sync\nRead Model projections
+  note right: Cross-Context events\nRead Model projections\nData repair mechanisms
 }
 
-SC --> AppServices : transactional
+SC --> AppServices : minimal transactional
+ES --> AppServices : event-sourced
 EC --> AppServices : event-driven
 
 note right of SMC
@@ -1194,7 +1759,7 @@ end note
 
 - ✅ **Domain Event Bus実装パターン**
   - NestJS CQRS統合
-  - EventStore DB連携
+  - Kurrent DB連携
   - 非同期Event Handler実装
 
 ### 7.2 Backend System Architect
@@ -1209,14 +1774,14 @@ end note
   - Query Handler実装（Read Model最適化）
   - バリデーション・エラーハンドリング
 
-- ✅ **Repository Pattern実装（EventStore + PostgreSQL）**
+- ✅ **Repository Pattern実装（Kurrent + PostgreSQL）**
   - Event Sourcing Repository実装
   - Read Model Repository実装
   - データ整合性保証実装
 
 ### 7.3 Database Architect Consultant
 
-- ✅ **Event Store DB schema設計**
+- ✅ **Kurrent DB schema設計**
   - Aggregate別Event Stream設計
   - スナップショット保存戦略
   - Event版数管理・マイグレーション
