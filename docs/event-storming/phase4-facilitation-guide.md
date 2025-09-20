@@ -34,7 +34,7 @@
 - [x] データの責任境界仮説作成
 - [x] 強整合性 vs 結果整合性の判定基準確立
 - [x] PostgreSQL Read Model設計方針
-- [x] EventStore DB Event Stream設計方針
+- [x] Kurrent DB Event Stream設計方針
 
 ### 1.4 参画エージェント準備確認
 
@@ -628,7 +628,7 @@ database "PostgreSQL" as PG #LightGray {
   [task_management schema]
 }
 
-database "EventStore DB" as ES #LightGray {
+database "Kurrent DB" as ES #LightGray {
   [Event Streams]
   [Snapshots]
 }
@@ -1168,7 +1168,7 @@ rectangle "Application Services" as AppServices #LightGray {
 }
 
 rectangle "Infrastructure" as Infra #LightGray {
-  database "EventStore DB" as ES {
+  database "Kurrent DB" as ES {
     [Event Streams]
     [Snapshots]
   }
@@ -1241,7 +1241,7 @@ end note
 
 - [x] Aggregate実装クラス設計
 - [x] Command/Query Handler実装
-- [x] Repository Pattern実装（EventStore + PostgreSQL）
+- [x] Repository Pattern実装（Kurrent + PostgreSQL）
 
 **Database Architect Consultant**:
 

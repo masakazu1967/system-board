@@ -166,9 +166,9 @@
 #### Technical Infrastructure
 
 - `SystemHealthCheckCompleted` - システムヘルスチェック完了
-- `EventStoreSnapshotCreated` - イベントストアスナップショット作成
+- `KurrentSnapshotCreated` - イベントストアスナップショット作成
 - `PerformanceThresholdExceeded` - パフォーマンス閾値超過
-- `EventStoreConnectionRestored` - イベントストア接続復旧
+- `KurrentConnectionRestored` - イベントストア接続復旧
 
 ---
 
@@ -312,7 +312,7 @@ rectangle "User Experience Domain" as UED #Orange {
 ' Infrastructure Events
 rectangle "Infrastructure Domain" as IFD #Orange {
   rectangle "SystemHealthCheckCompleted" as E39 #LightSalmon
-  rectangle "EventStoreSnapshotCreated" as E40 #LightSalmon
+  rectangle "KurrentSnapshotCreated" as E40 #LightSalmon
   rectangle "PerformanceThresholdExceeded" as E41 #LightSalmon
   rectangle "DataInconsistencyDetected" as E42 #LightSalmon
   rectangle "AuditTrailGenerated" as E43 #LightSalmon
@@ -375,7 +375,7 @@ end note
 ### 5.2 技術実現可能性確認
 
 - ✅ **Event Sourcing + CQRS実装に適したイベント設計**
-- ✅ **NestJS + EventStore DBでの実装可能性確認**
+- ✅ **NestJS + Kurrent DBでの実装可能性確認**
 - ✅ **パフォーマンス制約（5-10同時ユーザー）への適合性確認**
 - ✅ **製造業セキュリティ要件への適合性確認**
 

@@ -33,7 +33,7 @@ System Boardプロジェクトの技術スタック選定は、プロジェク�
 **複数データベース戦略**:
 
 - **PostgreSQL**: リードモデル（CQRS）
-- **EventStore DB**: イベントストア（Event Sourcing）
+- **Kurrent DB**: イベントストア（Event Sourcing）
 - **Redis**: キャッシュ、セッション管理
 - **選定理由**: 各用途に最適化されたデータストア
 
@@ -141,7 +141,7 @@ backend:
 ```yaml
 data_layer:
   read_model: PostgreSQL 15+
-  event_store: EventStore DB 23+
+  event_store: Kurrent DB 23+
   cache: Redis 7+
   search: (Optional) Elasticsearch
   backup: PostgreSQL Point-in-Time Recovery

@@ -43,7 +43,7 @@ ITシステム管理ドメインの特殊性を踏まえた設計要件：
 - **アーキテクチャ**: オニオンアーキテクチャ（ヘキサゴナルから変更）
 - **実装戦略**: モジュラーモノリス → 段階的マイクロサービス展開
 - **バックエンド**: NestJS + TypeScript
-- **データ**: PostgreSQL + EventStore DB + Redis
+- **データ**: PostgreSQL + Kurrent DB + Redis
 - **監視**: Prometheus + Grafana + Loki（ELKから変更）
 
 ### 2.2 Bounded Context境界（事前想定）
@@ -818,7 +818,7 @@ end note
 
 **Database Architect Consultant**:
 
-- [ ] EventStore DB設計・構築
+- [ ] Kurrent DB設計・構築
 - [ ] Read Model Database設計
 - [ ] パフォーマンス最適化方針
 

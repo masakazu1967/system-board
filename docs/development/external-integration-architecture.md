@@ -45,7 +45,7 @@ package "Domain Layer (Pure TypeScript)" as DomainLayer {
 }
 
 package "Infrastructure Layer" as InfraLayer {
-  [Event Store] as EventStore
+  [Kurrent] as Kurrent
   [PostgreSQL] as PostgreSQL
   [Redis Cache] as Redis
   [Kafka Producer] as KafkaProducer
@@ -81,7 +81,7 @@ DomainServices --> EventAggregates
 EventAggregates --> Policies
 
 ' Infrastructure
-DomainServices --> EventStore
+DomainServices --> Kurrent
 DomainServices --> PostgreSQL
 IntServices --> Redis
 EventHandlers --> KafkaProducer

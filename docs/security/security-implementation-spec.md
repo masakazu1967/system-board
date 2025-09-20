@@ -49,7 +49,7 @@ geographic_data_requirements:
 byok_encryption:
   key_management_service: "Azure Key Vault / AWS KMS"
   customer_managed_keys:
-    database_encryption: "System Board製造データ・脆弱性情報専用暗号化キー - 製造業機密情報保護用のBYOKカスタマー管理暗号化キー（PostgreSQL/EventStore DB対応）"
+    database_encryption: "System Board製造データ・脆弱性情報専用暗号化キー - 製造業機密情報保護用のBYOKカスタマー管理暗号化キー（PostgreSQL/Kurrent DB対応）"
     storage_encryption: "System Board監視ログ・トレースデータ専用暗号化キー（Loki/Jaeger/S3/Azure Storage対応）"
     backup_encryption: "System Board災害復旧・バックアップ専用暗号化キー（リージョン間レプリケーション対応）"
 

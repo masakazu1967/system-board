@@ -271,11 +271,11 @@ describe('RegisterSystemHandler Error Handling', () => {
       // System saved successfully but event publishing failed
       mockSystemRepository.save.mockResolvedValue(undefined);
       mockEventBus.publish.mockRejectedValue(
-        new EventStoreException('Event store unavailable')
+        new KurrentException('Event store unavailable')
       );
 
       await expect(handler.execute(command))
-        .rejects.toThrow(EventStoreException);
+        .rejects.toThrow(KurrentException);
 
       // Verify compensation: system deletion attempted
       expect(mockSystemRepository.delete).toHaveBeenCalledWith(
@@ -1018,12 +1018,12 @@ describe('Authorization Error Handling', () => {
 
 ```typescript
 describe('Event Sourcing Consistency Tests', () => {
-  let eventStore: jest.Mocked<EventStore>;
+  let eventStore: jest.Mocked<Kurrent>;
   let eventBus: jest.Mocked<EventBus>;
   let systemAggregate: SystemAggregate;
 
   beforeEach(() => {
-    eventStore = createMockEventStore();
+    eventStore = createMockKurrent();
     eventBus = createMockEventBus();
     systemAggregate = new SystemAggregate();
   });
@@ -1033,11 +1033,11 @@ describe('Event Sourcing Consistency Tests', () => {
       const command = new RegisterSystemCommand(validSystemData);
       
       eventStore.appendToStream.mockRejectedValue(
-        new EventStoreException('Connection to EventStore DB failed')
+        new KurrentException('Connection to Kurrent DB failed')
       );
 
       await expect(systemAggregate.handle(command))
-        .rejects.toThrow(EventStoreException);
+        .rejects.toThrow(KurrentException);
 
       // Verify no side effects occurred
       expect(eventBus.publish).not.toHaveBeenCalled();
@@ -1090,7 +1090,7 @@ describe('Event Sourcing Consistency Tests', () => {
 
       await expect(
         SystemAggregate.fromHistory('SYS-001', eventStore)
-      ).rejects.toThrow(EventStoreException);
+      ).rejects.toThrow(KurrentException);
 
       expect(mockAuditLogger.logError).toHaveBeenCalledWith(
         expect.objectContaining({
@@ -1685,7 +1685,7 @@ export default {
 | ScaleHostResources | ✅ MFA Required | ✅ Resource Limits | ✅ Invalid Scale | ✅ Resource Pool | ❌ N/A | ✅ Budget Exceeded |
 | DecommissionSystem | ✅ MFA Required | ✅ Executive Only | ✅ Has Dependencies | ✅ DB Lock | ❌ N/A | ✅ Active Tasks |
 | **Security Commands** | | | | | | |
-| ApplySecurityPatch | ✅ Token Refresh | ✅ Patch Permission | ✅ Incompatible | ✅ EventStore Fail | ✅ Patch Download | ✅ System Busy |
+| ApplySecurityPatch | ✅ Token Refresh | ✅ Patch Permission | ✅ Incompatible | ✅ Kurrent Fail | ✅ Patch Download | ✅ System Busy |
 | ApproveMigrationPlan | ✅ Session Timeout | ✅ Manager Role | ✅ Plan Invalid | ✅ Audit Log Fail | ❌ N/A | ✅ No Migration |
 | ApproveRiskAcceptance | ✅ MFA Required | ✅ Executive Only | ✅ Missing Justification | ✅ Audit Storage | ❌ N/A | ✅ Risk Resolved |
 | **Task Management** | | | | | | |
