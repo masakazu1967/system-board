@@ -2,12 +2,58 @@
 
 **担当**: ソフトウェアアーキテクト
 **作成日**: 2025-09-20
-**Issue**: #120
+**更新日**: 2025-09-20 (アーキテクチャ強化版)
+**Issue**: #120 (US-SM-001-001: システム集約の設計)
+**親Issue**: #34 (US-SM-001: システム新規登録)
 **見積**: 30分
+**アーキテクチャパターン**: ヘキサゴナルアーキテクチャ + DDD + CQRS + イベントソーシング
 
-## 1. System集約の設計
+## 1. アーキテクチャ概要
 
-### 1.1 集約ルート (System Aggregate)
+### 1.1 設計原則
+
+**品質属性優先順位**:
+1. **セキュリティ**: 製造業要件に基づく情報漏洩防止最優先
+2. **可用性**: 99%以上のビジネス時間稼働率
+3. **性能**: 2秒未満のレスポンス時間
+4. **拡張性**: モジュラーモノリス→マイクロサービス段階移行対応
+5. **保守性**: DDD境界コンテキストによる明確な責任分離
+
+**アーキテクチャ制約**:
+- 完全自己ホスティング（外部SaaS禁止）
+- ISO 27001, NIST Cybersecurity Framework準拠
+- Kurrent DB (EventStore DB) によるイベントソーシング
+- PostgreSQL リードモデル + Redis キャッシュ
+- Apache Kafka イベントストリーミング
+
+### 1.2 コンテキストマッピング
+
+```mermaid
+graph TB
+    SM[System Management Context] --> VM[Vulnerability Management Context]
+    SM --> TM[Task Management Context]
+    SM --> RM[Relationship Management Context]
+
+    subgraph "System Management Context"
+        SA[System Aggregate]
+        PA[Package Aggregate]
+    end
+
+    subgraph "External Systems"
+        GitHub[GitHub API]
+        NVD[NVD API]
+        EOL[EndOfLife.date API]
+    end
+```
+
+## 2. System集約の設計
+
+### 2.1 集約ルート (System Aggregate)
+
+**ヘキサゴナルアーキテクチャにおける位置づけ**:
+- **ドメインコア**: システム管理の中核ビジネスロジック
+- **ポート**: システム操作の抽象インターフェース
+- **アダプター**: Kurrent DB、PostgreSQL、外部APIとの実装
 
 **責任範囲**: システム構成・パッケージ・ホスト管理
 
@@ -44,24 +90,43 @@ class System extends AggregateRoot {
 }
 ```
 
-### 1.2 不変条件 (Business Invariants)
+### 2.2 不変条件 (Business Invariants)
 
+**セキュリティ不変条件**:
+- **データ分類整合性**: セキュリティ分類変更時のカスケード検証必須
+- **アクセス制御**: セキュリティ分類に応じた適切なアクセス制御設定
+- **監査ログ**: 全ての状態変更に対する完全な監査証跡
+
+**ビジネス不変条件**:
 - **アクティブシステム要件**: アクティブシステムは必ず1つ以上のパッケージを持つ
 - **システム名一意性**: システム名はシステム全体で一意でなければならない
 - **廃止システム制約**: 廃止されたシステムはパッケージ更新不可
 - **セキュリティ分類整合性**: セキュリティ分類変更時の関連データ整合性保証
 
-### 1.3 発行ドメインイベント
+### 2.3 発行ドメインイベント
 
+**イベントストーミング対応**:
 - `SystemRegistered`: システム新規登録完了
 - `SystemConfigurationUpdated`: システム構成更新完了
 - `SystemDecommissioned`: システム廃止完了
 - `PackageInstalled`: パッケージインストール完了
 - `HostResourcesScaled`: ホストリソース拡張完了
 
-## 2. RegisterSystemコマンドの仕様
+## 3. RegisterSystemコマンドの仕様
 
-### 2.1 コマンド定義
+### 3.0 アーキテクチャコンテキスト
+
+**CQRSパターン適用**:
+- **コマンド側**: システム登録の状態変更操作
+- **クエリ側**: PostgreSQL読み取りモデルからの検索
+- **イベント**: Kurrent DBへの永続化とKafka配信
+
+### 3.1 コマンド定義
+
+**セキュリティ考慮事項**:
+- 入力値検証によるインジェクション攻撃防止
+- セキュリティ分類に基づく認可チェック
+- PII（個人識別情報）マスキング対応
 
 ```typescript
 export class RegisterSystemCommand {
@@ -93,7 +158,12 @@ export class RegisterSystemCommand {
 }
 ```
 
-### 2.2 コマンドハンドラー
+### 3.2 コマンドハンドラー
+
+**分散トレーシング統合**:
+- OpenTelemetry スパン生成
+- 処理時間・エラー率のメトリクス収集
+- GlitchTip エラートラッキング連携
 
 ```typescript
 @CommandHandler(RegisterSystemCommand)
@@ -104,7 +174,7 @@ export class RegisterSystemHandler {
     private readonly eventBus: DomainEventBus
   ) {}
 
-  async execute(command: RegisterSystemCommand): Promise<void> {
+  async execute(command: RegisterSystemCommand): Promise<SystemId> {
     // 1. ドメインモデル生成
     const system = System.register(command);
 
@@ -116,11 +186,19 @@ export class RegisterSystemHandler {
 
     // 4. ドメインイベント発行
     await this.eventBus.publishAll(system.getUncommittedEvents());
+
+    return system.id;
   }
 }
 ```
 
-### 2.3 バリデーションルール
+### 3.3 バリデーションルール
+
+**セキュリティバリデーション**:
+- **SQLインジェクション防止**: パラメータ化クエリ強制
+- **XSS防止**: HTML エスケープ処理
+- **CSRF防止**: トークンベース検証
+- **レート制限**: DDoS攻撃防止
 
 - **必須項目**: システム名、システム種別、ホスト構成
 - **システム名制約**: 1-255文字、英数字とハイフンのみ
@@ -128,9 +206,22 @@ export class RegisterSystemHandler {
 - **ホスト構成**: CPU、メモリ、ストレージの仕様必須
 - **セキュリティ分類**: PUBLIC, INTERNAL, CONFIDENTIAL, RESTRICTED から選択
 
-## 3. SystemRegisteredイベントの仕様
+## 4. SystemRegisteredイベントの仕様
 
-### 3.1 イベント定義
+### 4.0 イベントソーシングパターン
+
+**Kurrent DB統合**:
+- ストリーム名: `system-{systemId}`
+- パーティション戦略: システムIDベース
+- スナップショット: 100イベント毎
+- リテンション: 7年間（コンプライアンス要件）
+
+### 4.1 イベント定義
+
+**イベントバージョニング戦略**:
+- スキーマ進化対応
+- 後方互換性保証
+- マイグレーション戦略
 
 ```typescript
 export class SystemRegistered extends DomainEvent {
@@ -170,7 +261,14 @@ export class SystemRegistered extends DomainEvent {
 }
 ```
 
-### 3.2 イベントサブスクライバー
+### 4.2 イベントサブスクライバー
+
+**非同期処理パターン**:
+- Kafka Consumer Group による負荷分散
+- Dead Letter Queue によるエラーハンドリング
+- Idempotency Key による重複処理防止
+
+**コンテキスト間連携**:
 
 **脆弱性管理コンテキスト**:
 - システム登録時に脆弱性スキャンを自動開始
@@ -184,14 +282,29 @@ export class SystemRegistered extends DomainEvent {
 - PostgreSQLのシステム読み取りモデルを非同期更新
 - 検索インデックスの更新
 
-### 3.3 イベントバージョニング
+### 4.3 イベントバージョニング
+
+**スキーマ進化戦略**:
+- Avro スキーマレジストリ使用
+- セマンティックバージョニング適用
+- 段階的移行サポート
 
 - **Version 1.0**: 初期仕様 (現在)
 - **将来の拡張**: ライセンス情報、コンプライアンス要件、運用メタデータ
 
-## 4. ドメインサービスの責務定義
+## 5. ドメインサービスの責務定義
 
-### 4.1 SystemUniquenessService
+### 5.0 ヘキサゴナルアーキテクチャでの位置づけ
+
+**ドメインサービス**: 複数集約間の複雑なビジネスロジック
+**アプリケーションサービス**: ユースケースオーケストレーション
+
+### 5.1 SystemUniquenessService
+
+**分散システム考慮事項**:
+- 分散ロック機構による同時実行制御
+- 最終的整合性の受け入れ
+- 補償処理（Saga パターン）
 
 ```typescript
 @Injectable()
@@ -231,7 +344,12 @@ export class SystemUniquenessService {
 }
 ```
 
-### 4.2 SystemStateTransitionService
+### 5.2 SystemStateTransitionService
+
+**状態機械パターン**:
+- 有限状態オートマトン実装
+- 状態遷移の監査ログ
+- 無効遷移時の自動復旧
 
 ```typescript
 @Injectable()
@@ -262,7 +380,12 @@ export class SystemStateTransitionService {
 }
 ```
 
-### 4.3 SystemValidationService
+### 5.3 SystemValidationService
+
+**バリデーション階層**:
+1. **構文バリデーション**: 形式・型チェック
+2. **セマンティックバリデーション**: ビジネスルールチェック
+3. **整合性バリデーション**: 他システムとの整合性チェック
 
 ```typescript
 @Injectable()
@@ -321,9 +444,21 @@ export class SystemValidationService {
 }
 ```
 
-## 5. アプリケーションレイヤーのService設計
+## 6. アプリケーションレイヤーのService設計
 
-### 5.1 SystemApplicationService
+### 6.0 レイヤー責任分離
+
+**ヘキサゴナルアーキテクチャ適用**:
+- **ポート**: インターフェース定義（SystemApplicationService）
+- **アダプター**: 外部システム統合（Repository実装）
+- **ドメインコア**: ビジネスロジック（System集約）
+
+### 6.1 SystemApplicationService
+
+**トランザクション境界**:
+- ユースケース単位でのトランザクション
+- Saga パターンによる分散トランザクション
+- 補償処理の自動実行
 
 ```typescript
 @Injectable()
@@ -378,10 +513,32 @@ export class SystemApplicationService {
     await this.systemRepository.save(system);
     await this.eventBus.publishAll(system.getUncommittedEvents());
   }
+
+  async getSystemMetrics(systemId: SystemId): Promise<SystemMetricsDto> {
+    const system = await this.systemRepository.getById(systemId);
+
+    // メトリクス収集ロジック
+    const metrics = await this.collectSystemMetrics(system);
+
+    return SystemMetricsDto.fromDomain(metrics);
+  }
+
+  private async collectSystemMetrics(system: System): Promise<SystemMetrics> {
+    // Prometheus メトリクス収集
+    // パフォーマンス指標算出
+    // 脆弱性スコア集計
+    return new SystemMetrics(/* ... */);
+  }
 }
 ```
 
-### 5.2 SystemQueryService
+### 6.2 SystemQueryService
+
+**CQRS読み取り側最適化**:
+- PostgreSQL 読み取り専用レプリカ活用
+- Redis キャッシュ戦略
+- インデックス最適化
+- ページネーション実装
 
 ```typescript
 @Injectable()
@@ -412,9 +569,21 @@ export class SystemQueryService {
 }
 ```
 
-## 6. Repository設計
+## 7. Repository設計
 
-### 6.1 SystemRepository Interface
+### 7.0 イベントソーシングアーキテクチャ
+
+**ストレージ戦略**:
+- **書き込み**: Kurrent DB (イベントストア)
+- **読み取り**: PostgreSQL (プロジェクション)
+- **キャッシュ**: Redis (頻繁アクセスデータ)
+- **検索**: Elasticsearch (全文検索)
+
+### 7.1 SystemRepository Interface
+
+**ポートアダプターパターン**:
+- SystemRepository: ドメインレイヤーのポート
+- KurrentSystemRepository: インフラレイヤーのアダプター
 
 ```typescript
 export interface SystemRepository {
@@ -425,7 +594,13 @@ export interface SystemRepository {
 }
 ```
 
-### 6.2 Event Sourcing Repository実装
+### 7.2 Event Sourcing Repository実装
+
+**パフォーマンス最適化**:
+- スナップショット機能による復元高速化
+- 並列イベント処理
+- 接続プール最適化
+- バッチ処理による効率化
 
 ```typescript
 @Injectable()
@@ -436,18 +611,28 @@ export class KurrentSystemRepository implements SystemRepository {
   ) {}
 
   async save(system: System): Promise<void> {
-    const uncommittedEvents = system.getUncommittedEvents();
-    const serializedEvents = uncommittedEvents.map(event =>
-      this.eventSerializer.serialize(event)
-    );
+    const startTime = Date.now();
 
-    await this.kurrent.appendToStream(
-      `system-${system.id.value}`,
-      system.expectedVersion,
-      serializedEvents
-    );
+    try {
+      const uncommittedEvents = system.getUncommittedEvents();
+      const serializedEvents = uncommittedEvents.map(event =>
+        this.eventSerializer.serialize(event)
+      );
 
-    system.markEventsAsCommitted();
+      await this.kurrent.appendToStream(
+        `system-${system.id.value}`,
+        system.expectedVersion,
+        serializedEvents
+      );
+
+      system.markEventsAsCommitted();
+
+      // メトリクス記録
+      this.recordSaveMetrics(Date.now() - startTime, true);
+    } catch (error) {
+      this.recordSaveMetrics(Date.now() - startTime, false);
+      throw error;
+    }
   }
 
   async getById(systemId: SystemId): Promise<System> {
@@ -496,12 +681,36 @@ export class KurrentSystemRepository implements SystemRepository {
       throw error;
     }
   }
+
+  private recordSaveMetrics(duration: number, success: boolean): void {
+    // Prometheus メトリクス記録
+    // system_save_duration_ms
+    // system_save_success_total / system_save_failure_total
+  }
 }
 ```
 
-## 7. エラーハンドリング
+## 8. エラーハンドリング戦略
 
-### 7.1 ドメイン例外
+### 8.0 回復力のあるシステム設計
+
+**障害対応パターン**:
+- **サーキットブレーカー**: 外部API呼び出し保護
+- **リトライ機構**: 指数バックオフによる再試行
+- **タイムアウト**: 適切なタイムアウト設定
+- **フォールバック**: 代替処理パス
+
+**監視・アラート統合**:
+- GlitchTip による自動エラー通知
+- Microsoft Teams エスカレーション
+- Grafana ダッシュボード可視化
+
+### 8.1 ドメイン例外
+
+**例外階層設計**:
+- ビジネス例外 vs システム例外の明確な分離
+- 復旧可能性による分類
+- 多言語対応メッセージ
 
 ```typescript
 export class SystemDomainError extends Error {
@@ -536,7 +745,12 @@ export class SystemValidationError extends SystemDomainError {
 }
 ```
 
-### 7.2 アプリケーション例外
+### 8.2 アプリケーション例外
+
+**分散システム例外処理**:
+- 分散トレーシングによる例外追跡
+- 障害の根本原因分析支援
+- 自動復旧メカニズム
 
 ```typescript
 export class SystemNotFoundError extends Error {
@@ -554,36 +768,325 @@ export class SystemNameReservationConflictError extends Error {
 }
 ```
 
-## 8. 実装優先度
+## 9. パフォーマンス・スケーラビリティ設計
 
-### Phase 1: 基本構造 (Sprint 1-2)
+### 9.1 パフォーマンス要件
+
+**応答時間目標**:
+- システム登録: < 1秒
+- システム検索: < 500ms
+- 一覧表示: < 2秒
+- 分析レポート: < 10秒
+
+**スループット目標**:
+- 同時ユーザー: 5-10名
+- システム登録: 100件/日
+- 検索クエリ: 1,000件/日
+
+### 9.2 スケーラビリティ戦略
+
+**垂直スケーリング（Phase 1）**:
+- CPU・メモリリソース最適化
+- データベース接続プール調整
+- インデックス最適化
+
+**水平スケーリング（Phase 2-3）**:
+- 読み取りレプリカ追加
+- Kafka パーティション拡張
+- マイクロサービス分割準備
+
+### 9.3 キャッシュ戦略
+
+**Redis キャッシュレイヤー**:
+- システム基本情報: TTL 1時間
+- 脆弱性データ: TTL 24時間
+- ユーザーセッション: TTL 8時間
+- 統計データ: TTL 30分
+
+## 10. セキュリティアーキテクチャ
+
+### 10.1 多層防御戦略
+
+**アプリケーション層**:
+- 入力値検証・サニタイゼーション
+- SQL インジェクション防止
+- XSS・CSRF 対策
+- レート制限・DDoS 防止
+
+**データ層**:
+- データ暗号化（保存時・転送時）
+- アクセス制御（RBAC）
+- 監査ログ完全記録
+- データマスキング
+
+**インフラ層**:
+- ネットワークセグメンテーション
+- ファイアウォール設定
+- 侵入検知システム
+- 定期セキュリティスキャン
+
+### 10.2 コンプライアンス対応
+
+**ISO 27001 要件**:
+- 情報資産分類・管理
+- リスクアセスメント
+- インシデント対応手順
+- 継続的改善プロセス
+
+**NIST Cybersecurity Framework**:
+- 識別（Identify）
+- 防御（Protect）
+- 検知（Detect）
+- 対応（Respond）
+- 復旧（Recover）
+
+## 11. 監視・オブザーバビリティ設計
+
+### 11.1 分散トレーシング
+
+**OpenTelemetry 統合**:
+- トレースID による処理追跡
+- スパン単位のパフォーマンス測定
+- エラー発生箇所の特定
+- 依存関係の可視化
+
+**Jaeger 分散トレーシング**:
+- ユーザーリクエストの完全追跡
+- マイクロサービス間の呼び出し関係
+- ボトルネック特定
+- SLA 監視
+
+### 11.2 メトリクス・アラート
+
+**Prometheus メトリクス**:
+- アプリケーションメトリクス
+- インフラメトリクス
+- ビジネスメトリクス
+- カスタムメトリクス
+
+**Grafana ダッシュボード**:
+- リアルタイム監視
+- 傾向分析
+- アラート設定
+- レポート生成
+
+**Microsoft Teams 通知**:
+- 重要度別アラート配信
+- エスカレーション手順
+- インシデント管理
+- 復旧状況共有
+
+### 11.3 ログ集約・分析
+
+**Enhanced ELK Stack**:
+- **Elasticsearch**: ログ検索・分析
+- **Logstash**: ログ処理・変換
+- **Kibana**: ログ可視化
+- **Filebeat**: ログ収集
+
+**構造化ログ**:
+- JSON 形式統一
+- 相関ID による追跡
+- セキュリティイベント記録
+- 法的要件対応
+
+## 12. 実装フェーズ戦略
+
+### Phase 1: コア基盤 (Sprint 1-2)
+
+**アーキテクチャ基盤**:
 1. System集約基本実装
 2. RegisterSystemコマンド・ハンドラー
 3. SystemRegisteredイベント
 4. 基本的なRepository実装
 
-### Phase 2: ドメインサービス (Sprint 3-4)
+### Phase 2: ドメインロジック (Sprint 3-4)
+
+**ビジネスロジック実装**:
 1. SystemUniquenessService実装
 2. SystemValidationService実装
 3. エラーハンドリング強化
 4. 単体テスト完備
 
-### Phase 3: アプリケーション層 (Sprint 5-6)
+### Phase 3: 統合・最適化 (Sprint 5-6)
+
+**システム統合**:
 1. SystemApplicationService実装
 2. SystemQueryService実装
 3. Read Model Projection実装
 4. 統合テスト実装
 
-## 9. 受け入れ条件確認
+## 13. 品質保証・テスト戦略
 
-- ✅ **System集約の設計ドキュメント作成**: 完了 (セクション1)
-- ✅ **RegisterSystemコマンドの仕様定義**: 完了 (セクション2)
-- ✅ **SystemRegisteredイベントの仕様定義**: 完了 (セクション3)
-- ✅ **ドメインサービスの責務定義**: 完了 (セクション4)
+### 13.1 テスト階層
+
+**単体テスト（80%カバレッジ目標）**:
+- ドメインオブジェクト完全テスト
+- ビジネスロジック検証
+- エッジケース・例外処理
+- プロパティベーステスト
+
+**統合テスト**:
+- Repository 実装テスト
+- 外部API統合テスト
+- イベントソーシング整合性
+- データベース操作検証
+
+**コンポーネントテスト**:
+- アプリケーションサービステスト
+- イベントハンドラーテスト
+- API エンドポイントテスト
+- エラーシナリオテスト
+
+**契約テスト**:
+- Producer/Consumer 契約
+- API 仕様準拠性
+- スキーマ互換性
+- バージョニング検証
+
+### 13.2 パフォーマンステスト
+
+**負荷テスト**:
+- 想定負荷での安定性確認
+- レスポンス時間測定
+- リソース使用量監視
+- ボトルネック特定
+
+**ストレステスト**:
+- 限界負荷での挙動確認
+- 障害時の復旧能力
+- データ整合性保証
+- グレースフルデグラデーション
+
+### 13.3 セキュリティテスト
+
+**OWASP Top 10 検証**:
+- 自動脆弱性スキャン
+- ペネトレーションテスト
+- コード静的解析
+- 依存関係脆弱性チェック
+
+**コンプライアンステスト**:
+- ISO 27001 要件検証
+- データ保護法対応
+- 監査ログ完全性
+- アクセス制御検証
+
+## 14. 運用・保守考慮事項
+
+### 14.1 デプロイメント戦略
+
+**Blue-Green デプロイメント**:
+- ゼロダウンタイム更新
+- 即座のロールバック機能
+- データベースマイグレーション
+- 段階的トラフィック切り替え
+
+**カナリアリリース**:
+- 小規模ユーザーでの先行検証
+- メトリクス監視による自動判定
+- 異常検知時の自動ロールバック
+- A/B テスト機能
+
+### 14.2 障害対応・復旧
+
+**災害復旧計画**:
+- RTO（目標復旧時間）: 4時間
+- RPO（目標復旧時点）: 1時間
+- バックアップ・復元手順
+- 通信・エスカレーション計画
+
+**インシデント対応**:
+- 自動インシデント検知
+- 段階的エスカレーション
+- 根本原因分析（RCA）
+- 再発防止策実装
+
+### 14.3 容量計画・拡張
+
+**モニタリング指標**:
+- CPU・メモリ使用率
+- ディスク容量・IOPS
+- ネットワーク帯域
+- データベース接続数
+
+**拡張戦略**:
+- リソース使用率85%でアラート
+- 90%で自動スケーリング
+- 予測的拡張計画
+- コスト最適化
+
+## 15. 受け入れ条件確認
+
+- ✅ **System集約の設計ドキュメント作成**: 完了 (セクション2 - ヘキサゴナルアーキテクチャ対応)
+- ✅ **RegisterSystemコマンドの仕様定義**: 完了 (セクション3 - CQRS・セキュリティ強化)
+- ✅ **SystemRegisteredイベントの仕様定義**: 完了 (セクション4 - イベントソーシング詳細)
+- ✅ **ドメインサービスの責務定義**: 完了 (セクション5 - 分散システム考慮)
+
+### 追加実装要件
+
+- ✅ **アーキテクチャ品質属性定義**: 完了 (セクション1)
+- ✅ **パフォーマンス・スケーラビリティ設計**: 完了 (セクション9)
+- ✅ **セキュリティアーキテクチャ**: 完了 (セクション10)
+- ✅ **監視・オブザーバビリティ**: 完了 (セクション11)
+- ✅ **品質保証・テスト戦略**: 完了 (セクション13)
+- ✅ **運用・保守考慮事項**: 完了 (セクション14)
+
+## 16. 技術的負債・リスク管理
+
+### 16.1 技術的負債の予防
+
+**アーキテクチャ負債**:
+- 定期的なアーキテクチャレビュー
+- 技術選択の継続的評価
+- リファクタリング計画
+- パフォーマンス改善
+
+**コード品質負債**:
+- 自動コード品質チェック
+- 技術的負債の可視化
+- 継続的リファクタリング
+- テストカバレッジ維持
+
+### 16.2 リスク管理
+
+**技術リスク**:
+- 外部依存関係の脆弱性
+- スケーラビリティ限界
+- データ整合性リスク
+- セキュリティ脅威
+
+**ビジネスリスク**:
+- 要件変更への対応性
+- 法規制変更への適応
+- 競合技術の台頭
+- 人材リスク
+
+**緩和策**:
+- 定期的なリスク評価
+- 代替技術の調査・検証
+- チーム知識の共有
+- ドキュメント整備
 
 ---
 
 **文書管理**:
 - **作成者**: ソフトウェアアーキテクト
-- **レビュー要求**: バックエンドエンジニア、データベースアーキテクト
-- **次期作業**: 実装フェーズ開始 (NestJS詳細実装)
+- **文書種別**: システム設計仕様書
+- **対象**: System Management Context - System Aggregate
+- **アーキテクチャパターン**: ヘキサゴナル + DDD + CQRS + イベントソーシング
+- **レビュー要求**:
+  - バックエンドエンジニア（実装レビュー）
+  - データベースアーキテクト（永続化戦略）
+  - セキュリティエンジニア（セキュリティ要件）
+  - DevOpsエンジニア（運用・監視要件）
+- **次期作業**:
+  1. NestJS 詳細実装設計
+  2. Kurrent DB スキーマ設計
+  3. PostgreSQL 読み取りモデル設計
+  4. OpenTelemetry 計装設計
+- **関連ドキュメント**:
+  - [コーディング規約](/docs/development/coding-standards.md)
+  - [イベントストーミング成果物](/docs/event-storming/)
+  - [アーキテクチャ決定記録](/docs/architecture/adr/)
+  - [セキュリティ要件](/docs/security/requirements.md)
