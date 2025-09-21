@@ -847,9 +847,57 @@ sequenceDiagram
 
 **セキュリティ考慮事項**:
 
-- 入力値検証によるインジェクション攻撃防止
-- セキュリティ分類に基づく認可チェック
-- PII（個人識別情報）マスキング対応
+- **入力値検証**: Zodスキーマによるインジェクション攻撃防止（ドメイン層：値オブジェクト作成時）
+- **認可チェック**: セキュリティ分類に基づく適切なアクセス制御（アプリケーション層：コマンドハンドラー実行前）
+- **PIIマスキング**: 個人識別情報の自動保護（インフラストラクチャ層：ログ・レスポンス出力時）
+
+**層別セキュリティ実装**:
+
+```typescript
+// ドメイン層: ビジネスルールベースのセキュリティ制約
+export class System extends AggregateRoot {
+  // セキュリティ分類に基づくビジネスルール
+  public hasEncryptionRequirement(): boolean {
+    return this.securityClassification === SecurityClassification.CONFIDENTIAL ||
+           this.securityClassification === SecurityClassification.RESTRICTED;
+  }
+
+  // ドメイン不変条件
+  public validateSecurityClassificationConsistency(): boolean {
+    if (this.hasEncryptionRequirement()) {
+      return this.hostConfiguration.isEncryptionEnabled() &&
+             this.packages.areAllSecurityCompliant();
+    }
+    return true;
+  }
+}
+
+// アプリケーション層: セキュリティポリシー制御
+@Injectable()
+export class SystemSecurityPolicy {
+  determineFieldVisibility(
+    userRole: UserRole,
+    classification: SecurityClassification
+  ): SystemFieldVisibility {
+    return {
+      basic: true, // 常に表示
+      operational: this.hasOperationalAccess(userRole, classification),
+      confidential: this.hasConfidentialAccess(userRole, classification),
+      restricted: this.hasRestrictedAccess(userRole, classification)
+    };
+  }
+}
+
+// インフラストラクチャ層: セキュリティフィルタリング
+export class SystemSecurityDto {
+  static fromDomain(
+    system: System,
+    visibility: SystemFieldVisibility
+  ): SecurityFilteredSystemResponse {
+    // セキュリティポリシーに基づくフィールドフィルタリング
+  }
+}
+```
 
 ```typescript
 export class RegisterSystemCommand {
@@ -859,8 +907,14 @@ export class RegisterSystemCommand {
   readonly securityClassification: SecurityClassification;
   readonly criticality: CriticalityLevel;
   readonly initialPackages: PackageDto[];
+  readonly userContext: UserContext; // 認可チェック用のユーザー情報
 
   constructor(data: RegisterSystemCommandData) {
+    // セキュリティ強化：ユーザーコンテキスト必須
+    if (!data.userContext) {
+      throw new InvalidCommandError('User context is required for security authorization');
+    }
+
     // DRY原則：バリデーションは値オブジェクト作成時に実行されるため、ここでは単純な代入のみ
     this.name = data.name;
     this.type = data.type;
@@ -868,11 +922,28 @@ export class RegisterSystemCommand {
     this.securityClassification = data.securityClassification;
     this.criticality = data.criticality;
     this.initialPackages = data.initialPackages || [];
+    this.userContext = data.userContext;
+  }
+
+  // セキュリティ認可チェック用のメタデータ
+  getSecurityMetadata(): SecurityCommandMetadata {
+    return {
+      commandType: 'REGISTER_SYSTEM',
+      targetClassification: this.securityClassification,
+      requiredAction: SystemAction.CREATE,
+      userRole: this.userContext.role
+    };
   }
 }
 ```
 
 ### 3.2 コマンドハンドラー
+
+**セキュリティ統合アプローチ**:
+
+- **認可チェック**: コマンド実行前の事前認可とドメインオブジェクト生成後の事後認可
+- **監査ログ**: 全セキュリティイベントの完全な証跡記録
+- **PIIマスキング**: ログとエラーメッセージでの自動PII保護
 
 **分散トレーシング統合**:
 
@@ -890,8 +961,11 @@ export class RegisterSystemCommand {
 @CommandHandler(RegisterSystemCommand)
 export class RegisterSystemHandler {
   constructor(
+    private readonly authorizationService: SystemAuthorizationService,
     private readonly systemUniquenessService: SystemUniquenessService,
-    private readonly eventBus: DomainEventBus
+    private readonly eventBus: DomainEventBus,
+    private readonly auditLogger: SecurityAuditLogger,
+    private readonly piiProtectionService: PIIProtectionService
   ) {}
 
   async execute(command: RegisterSystemCommand): Promise<SystemId> {
@@ -923,11 +997,179 @@ export class RegisterSystemHandler {
 - **CSRF防止**: トークンベース検証
 - **レート制限**: DDoS攻撃防止
 
-- **必須項目**: システム名、システム種別、ホスト構成
-- **システム名制約**: 1-255文字、英数字とハイフンのみ
+- **必須項目**: システム名、システム種別、ホスト構成、ユーザーコンテキスト
+- **システム名制約**: 1-255文字、英数字とハイフンのみ、予約語禁止
 - **システム種別**: WEB, API, DATABASE, BATCH, OTHER から選択
-- **ホスト構成**: CPU、メモリ、ストレージの仕様必須
+- **ホスト構成**: CPU(1-128)、メモリ(1-1024GB)、ストレージ(1-10TB)、暗号化設定
 - **セキュリティ分類**: PUBLIC, INTERNAL, CONFIDENTIAL, RESTRICTED から選択
+- **認可権限**: ユーザーロールとセキュリティ分類の適合性
+
+### 3.4 セキュリティ統合コンポーネント
+
+**層別セキュリティコンポーネント**:
+
+```typescript
+// アプリケーション層: セキュリティサービス
+@Injectable()
+export class SystemAuthorizationService {
+  async authorizeCommand(metadata: SecurityCommandMetadata): Promise<AuthorizationResult> {
+    // セキュリティ分類に基づく認可チェック
+    const userRole = metadata.userRole;
+    const targetClassification = metadata.targetClassification;
+    const requiredAction = metadata.requiredAction;
+
+    return this.authorizationMatrix.check(userRole, targetClassification, requiredAction);
+  }
+}
+
+@Injectable()
+export class PIIProtectionService {
+  async maskEventsForLogging(events: DomainEvent[]): Promise<DomainEvent[]> {
+    // PII自動検出とマスキング
+    return events.map(event => {
+      const maskedPayload = this.piiDetector.maskSensitiveData(event.payload);
+      return { ...event, payload: maskedPayload };
+    });
+  }
+
+  async maskErrorForLogging(error: Error): Promise<any> {
+    // エラーメッセージからPIIを自動マスキング
+    return {
+      message: this.piiDetector.maskSensitiveData(error.message),
+      stack: this.piiDetector.maskSensitiveData(error.stack),
+      timestamp: new Date().toISOString()
+    };
+  }
+}
+
+@Injectable()
+export class SecurityAuditLogger {
+  async logAuthorizedSystemCreation(audit: SystemCreationAudit): Promise<void> {
+    // ISO 27001, NIST Framework準拠の監査ログ
+    const auditEntry = {
+      eventType: 'SYSTEM_CREATION_AUTHORIZED',
+      timestamp: new Date().toISOString(),
+      systemId: audit.systemId,
+      securityClassification: audit.securityClassification,
+      userId: audit.userContext.userId,
+      userRole: audit.userContext.role,
+      sourceIp: audit.userContext.sourceIp,
+      additionalActions: audit.additionalActions,
+      complianceFrameworks: ['ISO27001', 'NIST_CSF']
+    };
+
+    await this.auditStorage.store(auditEntry);
+    await this.complianceReporter.report(auditEntry);
+  }
+
+  async logUnauthorizedAccess(violation: SecurityViolation): Promise<void> {
+    // 不正アクセス試行の監査ログ
+    const violationEntry = {
+      eventType: 'UNAUTHORIZED_ACCESS_ATTEMPT',
+      timestamp: new Date().toISOString(),
+      command: violation.command,
+      reason: violation.reason,
+      userId: violation.userContext.userId,
+      userRole: violation.userContext.role,
+      sourceIp: violation.userContext.sourceIp,
+      securityClassification: violation.securityClassification,
+      severity: 'HIGH',
+      complianceFrameworks: ['ISO27001', 'NIST_CSF']
+    };
+
+    await this.auditStorage.store(violationEntry);
+    await this.securityIncidentManager.escalate(violationEntry);
+  }
+}
+```
+
+**インフラストラクチャ層: セキュリティDTO**:
+
+```typescript
+export class SystemSecurityDto {
+  static createSecureResponse(
+    system: System,
+    userRole: UserRole
+  ): SecurityFilteredSystemResponse {
+    const visibility = SecurityPolicy.determineFieldVisibility(
+      userRole,
+      system.getSecurityClassification()
+    );
+
+    const response: any = {};
+
+    // PUBLICレベル: 全ユーザーアクセス可能
+    if (visibility.basic) {
+      response.systemId = system.getId().getValue();
+      response.name = system.getName().getValue();
+      response.type = system.getType();
+      response.status = system.getStatus();
+    }
+
+    // INTERNALレベル: OPERATOR以上
+    if (visibility.operational) {
+      response.hostConfiguration = {
+        cpu: system.getHostConfiguration().getCpu(),
+        memory: system.getHostConfiguration().getMemory(),
+        storage: system.getHostConfiguration().getStorage()
+        // encryptionEnabledはCONFIDENTIALレベル
+      };
+      response.packages = system.getPackages().getAll().map(pkg => ({
+        name: pkg.getName(),
+        version: pkg.getVersion()
+        // 脆弱性情報はCONFIDENTIALレベル
+      }));
+    }
+
+    // CONFIDENTIALレベル: ADMINISTRATOR以上
+    if (visibility.confidential) {
+      response.encryptionEnabled = system.getHostConfiguration().isEncryptionEnabled();
+      response.vulnerabilityDetails = system.getPackages().getVulnerablePackages();
+      response.networkConfiguration = system.getNetworkConfiguration();
+    }
+
+    // RESTRICTEDレベル: SECURITY_OFFICERのみ
+    if (visibility.restricted) {
+      response.securityKeys = system.getSecurityCredentials();
+      response.auditTrail = system.getAuditEvents();
+      response.complianceReports = system.getComplianceData();
+    }
+
+    return response;
+  }
+}
+
+export interface SystemFieldVisibility {
+  basic: boolean;        // systemId, name, type, status
+  operational: boolean;  // hostConfiguration(基本情報), packages(基本情報)
+  confidential: boolean; // encryptionEnabled, vulnerabilityDetails, networkConfiguration
+  restricted: boolean;   // securityKeys, auditTrail, complianceReports
+}
+
+export interface SecurityCommandMetadata {
+  commandType: string;
+  targetClassification: SecurityClassification;
+  requiredAction: SystemAction;
+  userRole: UserRole;
+}
+
+export enum SystemAction {
+  CREATE = 'CREATE',
+  READ = 'READ',
+  UPDATE = 'UPDATE',
+  DELETE = 'DELETE',
+  CHANGE_CLASSIFICATION = 'CHANGE_CLASSIFICATION'
+}
+```
+
+**監査ログ要件**:
+
+- **ISO 27001 準拠**: 情報セキュリティイベントの完全な記録
+- **NIST Cybersecurity Framework**: IDENTIFY, PROTECT, DETECT, RESPOND, RECOVER 寴応
+- **ログローテーション**: 日別ログファイル、圧縮保存、長期保存
+- **アクセス制御**: セキュリティ担当者のみアクセス可能
+- **PII保護**: 個人識別情報の自動マスキングと暗号化
+- **不正アクセス対応**: 自動エスカレーションとMicrosoft Teams通知
 
 ## 4. SystemRegisteredイベントの仕様
 
