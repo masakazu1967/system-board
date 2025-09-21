@@ -924,16 +924,19 @@ ORDER BY pg_total_relation_size(schemaname||'.'||tablename) DESC;
 ## 6. 実装優先度
 
 ### Phase 1: 基本スキーマ (Sprint 1)
+
 1. PostgreSQL テーブル作成
 2. 基本インデックス設定
 3. 初期データ投入
 
 ### Phase 2: EventStore 統合 (Sprint 2)
+
 1. イベントスキーマ実装
 2. プロジェクション設定
 3. イベント→ReadModel更新処理
 
 ### Phase 3: 運用最適化 (Sprint 3)
+
 1. パフォーマンス最適化
 2. データマイグレーション手順
 3. 監視・メンテナンス体制
@@ -941,6 +944,7 @@ ORDER BY pg_total_relation_size(schemaname||'.'||tablename) DESC;
 ---
 
 **文書管理**:
+
 - **作成者**: データベースアーキテクト
 - **レビュー要求**: ソフトウェアアーキテクト、バックエンドエンジニア
 - **次期作業**: NestJS実装 (Repository層、EventStore統合)
