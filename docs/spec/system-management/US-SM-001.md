@@ -89,11 +89,17 @@ graph TB
 
 | メソッド名 | 戻り値型 | 説明 | 事前条件 | 事後条件 |
 |-----------|---------|------|----------|----------|
-| register(command) | SystemRegistered | システム新規登録 | 有効なコマンド | SystemRegisteredイベント発行 |
+| register(command) | System | システム新規登録（ファクトリーメソッド） | 有効なコマンド | SystemインスタンスとSystemRegisteredイベント発行 |
 | updateConfiguration(config) | SystemConfigurationUpdated | 構成情報更新 | アクティブ状態 | 構成更新イベント発行 |
 | installPackage(package) | PackageInstalled | パッケージ追加 | アクティブ状態、有効パッケージ | パッケージ追加イベント発行 |
 | scaleHostResources(resources) | HostResourcesScaled | リソース拡張 | アクティブ状態 | リソース拡張イベント発行 |
 | decommission() | SystemDecommissioned | システム廃止 | 廃止可能状態 | 廃止イベント発行 |
+| hasEncryptionEnabled() | boolean | 暗号化有効判定 | - | true/false |
+| hasSecurityCompliantPackages() | boolean | セキュリティ準拠パッケージ判定 | - | true/false |
+| getIdValue() | string | ID値取得 | - | 文字列ID |
+| getName() | SystemName | システム名取得 | - | システム名 |
+| isActive() | boolean | アクティブ状態判定 | - | true/false |
+| hasNoPackages() | boolean | パッケージ無し判定 | - | true/false |
 
 **不変条件**:
 
@@ -128,10 +134,13 @@ graph TB
 | contains(package) | boolean | パッケージ存在確認 | - | true/false |
 | isEmpty() | boolean | 空判定 | - | true/false |
 | count() | number | パッケージ数 | - | 0以上の整数 |
+| empty() | SystemPackages | 空のコレクション作成（ファクトリー） | - | 空のSystemPackages |
+| fromArray(packages) | SystemPackages | 配列からコレクション作成（ファクトリー） | Package配列 | SystemPackages |
 | getAll() | Package[] | 全パッケージ取得 | - | コピー配列返却 |
 | getByName(name) | Package? | 名前検索 | - | パッケージまたはnull |
 | hasVulnerabilities() | boolean | 脆弱性存在確認 | - | true/false |
 | getVulnerablePackages() | Package[] | 脆弱性パッケージ取得 | - | 脆弱性パッケージ配列 |
+| areAllSecurityCompliant() | boolean | 全パッケージセキュリティ準拠判定 | - | true/false |
 
 **制約・ルール**:
 
@@ -157,11 +166,17 @@ classDiagram
         -Date createdDate
         -Date lastModified
         -Date? decommissionDate
-        +register(command) SystemRegistered
+        +register(command) System <<static>>
         +updateConfiguration(config) SystemConfigurationUpdated
         +installPackage(package) PackageInstalled
         +scaleHostResources(resources) HostResourcesScaled
         +decommission() SystemDecommissioned
+        +hasEncryptionEnabled() boolean
+        +hasSecurityCompliantPackages() boolean
+        +getIdValue() string
+        +getName() SystemName
+        +isActive() boolean
+        +hasNoPackages() boolean
     }
 
     class SystemPackages {
@@ -177,6 +192,9 @@ classDiagram
         +getByName(name) Package?
         +hasVulnerabilities() boolean
         +getVulnerablePackages() Package[]
+        +areAllSecurityCompliant() boolean
+        +empty() SystemPackages <<static>>
+        +fromArray(packages) SystemPackages <<static>>
     }
 
     class Package {
@@ -193,11 +211,16 @@ classDiagram
     class SystemId {
         <<ValueObject>>
         -string value
+        +getValue() string
+        +toStreamName() string
+        +generate() SystemId <<static>>
     }
 
     class SystemName {
         <<ValueObject>>
         -string value
+        +getValue() string
+        +constructor(value) throws InvalidSystemNameError
     }
 
     class HostConfiguration {
@@ -206,6 +229,8 @@ classDiagram
         -number memory
         -number storage
         -boolean encryptionEnabled
+        +isEncryptionEnabled() boolean
+        +constructor(dto) throws InvalidHostConfigurationError
     }
 
     class SystemType {
@@ -292,7 +317,7 @@ class System extends AggregateRoot {
 
   // Configuration
   private host: HostConfiguration;
-  private packages: Package[];
+  private packages: SystemPackages;
   private securityClassification: SecurityClassification;
   private criticality: CriticalityLevel;
 
@@ -301,12 +326,115 @@ class System extends AggregateRoot {
   private lastModified: Date;
   private decommissionDate?: Date;
 
+  // AggregateRootから継承されるフィールド
+  private uncommittedEvents: DomainEvent[] = [];
+
+  constructor(
+    systemId: SystemId,
+    name: SystemName,
+    type: SystemType,
+    status: SystemStatus,
+    host: HostConfiguration,
+    packages: SystemPackages,
+    securityClassification: SecurityClassification,
+    criticality: CriticalityLevel,
+    createdDate: Date,
+    lastModified: Date,
+    decommissionDate?: Date
+  ) {
+    super();
+    this.systemId = systemId;
+    this.name = name;
+    this.type = type;
+    this.status = status;
+    this.host = host;
+    this.packages = packages;
+    this.securityClassification = securityClassification;
+    this.criticality = criticality;
+    this.createdDate = createdDate;
+    this.lastModified = lastModified;
+    this.decommissionDate = decommissionDate;
+  }
+
+  // Factory Method (static)
+  public static register(command: RegisterSystemCommand): System {
+    // 値オブジェクト作成時にバリデーションが実行される（DRY原則に従う）
+    const systemId = SystemId.generate();
+    const systemName = new SystemName(command.name); // ここでバリデーション実行
+    const hostConfig = new HostConfiguration(command.hostConfiguration); // ここでバリデーション実行
+
+    const system = new System(
+      systemId,
+      systemName,
+      command.type,
+      SystemStatus.PLANNING,
+      hostConfig,
+      SystemPackages.empty(),
+      command.securityClassification,
+      command.criticality,
+      new Date(),
+      new Date()
+    );
+
+    // ドメインイベントを発行
+    system.addEvent(new SystemRegistered({
+      systemId: system.systemId,
+      name: system.name, // SystemName型で保持
+      type: system.type,
+      hostConfiguration: system.host,
+      securityClassification: system.securityClassification,
+      criticality: system.criticality,
+      initialPackages: SystemPackages.fromArray(command.initialPackages || []), // SystemPackages型で保持
+      registeredAt: new Date()
+    }));
+
+    return system;
+  }
+
   // Domain Methods
-  public registerSystem(command: RegisterSystemCommand): SystemRegistered;
   public updateConfiguration(config: SystemConfiguration): SystemConfigurationUpdated;
   public installPackage(package: Package): PackageInstalled;
   public scaleHostResources(resources: HostResources): HostResourcesScaled;
   public decommission(): SystemDecommissioned;
+
+  // デメテルの法則に従ったカプセル化メソッド
+  public hasEncryptionEnabled(): boolean {
+    return this.host.isEncryptionEnabled();
+  }
+
+  public hasSecurityCompliantPackages(): boolean {
+    return this.packages.areAllSecurityCompliant();
+  }
+
+  public getIdValue(): string {
+    return this.systemId.getValue();
+  }
+
+  public getName(): SystemName {
+    return this.name;
+  }
+
+  public isActive(): boolean {
+    return this.status === SystemStatus.ACTIVE;
+  }
+
+  public hasNoPackages(): boolean {
+    return this.packages.isEmpty();
+  }
+
+  // AggregateRootから継承されるメソッド
+  protected addEvent(event: DomainEvent): void {
+    // ドメインイベントを未コミットイベントリストに追加
+    this.uncommittedEvents.push(event);
+  }
+
+  public getUncommittedEvents(): DomainEvent[] {
+    return [...this.uncommittedEvents];
+  }
+
+  public markEventsAsCommitted(): void {
+    this.uncommittedEvents = [];
+  }
 
   // Invariants
   private validateActiveSystemHasPackages(): void;
@@ -329,11 +457,64 @@ class System extends AggregateRoot {
 
 ### 3.0 アーキテクチャコンテキスト
 
-**CQRSパターン適用**:
+**CQRS + Event Sourcing + Kurrent DB Pub/Sub**:
 
-- **コマンド側**: システム登録の状態変更操作
+- **コマンド側**: イベントストア永続化のみ（シンプルかつ高性能）
 - **クエリ側**: PostgreSQL読み取りモデルからの検索
-- **イベント**: Kurrent DBへの永続化とKafka配信
+- **イベントストア**: Kurrent DB（真実の源泉 + Pub/Sub機能）
+- **メッセージブローカー**: Kafka（Kurrent DB Pub/Subからのリアルタイム配信）
+
+### 3.0.1 最適な全体アーキテクチャ
+
+```mermaid
+sequenceDiagram
+    participant Client
+    participant API as API Controller
+    participant CH as Command Handler
+    participant ES as Event Store<br/>(Kurrent DB)
+    participant Sub as EventStore<br/>Subscriber
+    participant Kafka
+    participant EH as Event Handler
+    participant RM as Read Model<br/>(PostgreSQL)
+
+    Client->>API: POST /systems
+    API->>CH: RegisterSystemCommand
+
+    Note over CH,ES: シンプルな永続化
+    CH->>ES: append(events)
+    CH-->>API: SystemId
+    API-->>Client: 201 Created
+
+    Note over ES,Sub: Kurrent DB Pub/Sub（リアルタイム）
+    ES-->>Sub: event notification
+    Sub->>Kafka: publish(event)
+
+    Note over Kafka,EH: 非同期イベント処理
+    Kafka->>EH: SystemRegisteredEvent
+    EH->>RM: updateProjection()
+    EH-->>Kafka: ACK
+
+    Note over ES,RM: アーキテクチャの利点
+    rect rgb(255, 240, 240)
+        Note over ES: 真実の源泉<br/>イベントストア
+    end
+    rect rgb(240, 255, 240)
+        Note over Sub: リアルタイム通知<br/>Kurrent DB Pub/Sub
+    end
+    rect rgb(240, 240, 255)
+        Note over RM: クエリ最適化<br/>リードモデル
+    end
+```
+
+**Kurrent DB Pub/Subアーキテクチャの利点**:
+
+1. **シンプル性**: コマンドハンドラーはイベントストア永続化のみ
+2. **リアルタイム性**: ポーリング不要で低レイテンシ配信
+3. **高性能**: Outboxテーブルやバックグラウンド処理不要
+4. **Event Sourcing原則遵守**: イベントストアが真実の源泉
+5. **障害耐性**: イベントは永続化済み、Kurrent DBが再配信保証
+6. **監査ログ完全性**: 全イベントがイベントストアに記録
+7. **運用の簡単さ**: Outboxテーブルの管理やポーリングジョブ不要
 
 ### 3.1 コマンド定義
 
@@ -353,22 +534,13 @@ export class RegisterSystemCommand {
   readonly initialPackages: PackageDto[];
 
   constructor(data: RegisterSystemCommandData) {
-    this.validateCommand(data);
-    // ... initialization
-  }
-
-  private validateCommand(data: RegisterSystemCommandData): void {
-    if (!data.name || data.name.trim().length === 0) {
-      throw new InvalidSystemNameError('System name is required');
-    }
-
-    if (!data.type || !Object.values(SystemType).includes(data.type)) {
-      throw new InvalidSystemTypeError('Valid system type is required');
-    }
-
-    if (!data.hostConfiguration) {
-      throw new InvalidHostConfigurationError('Host configuration is required');
-    }
+    // DRY原則：バリデーションは値オブジェクト作成時に実行されるため、ここでは単純な代入のみ
+    this.name = data.name;
+    this.type = data.type;
+    this.hostConfiguration = data.hostConfiguration;
+    this.securityClassification = data.securityClassification;
+    this.criticality = data.criticality;
+    this.initialPackages = data.initialPackages || [];
   }
 }
 ```
@@ -381,27 +553,34 @@ export class RegisterSystemCommand {
 - 処理時間・エラー率のメトリクス収集
 - GlitchTip エラートラッキング連携
 
+**イベントソーシングアプローチ**:
+
+- コマンドハンドラーは集約の永続化は行わない
+- ドメインイベントをイベントバス（Kafka）に送信のみ
+- イベントハンドラーで永続化処理を実行
+
 ```typescript
 @CommandHandler(RegisterSystemCommand)
 export class RegisterSystemHandler {
   constructor(
-    private readonly systemRepository: SystemRepository,
     private readonly systemUniquenessService: SystemUniquenessService,
     private readonly eventBus: DomainEventBus
   ) {}
 
   async execute(command: RegisterSystemCommand): Promise<SystemId> {
-    // 1. ドメインモデル生成
+    // 1. ドメインモデル生成（ドメインイベントが内部で生成される）
     const system = System.register(command);
 
     // 2. 一意性制約チェック
-    await this.systemUniquenessService.ensureUniqueness(system.name);
+    const isUnique = await this.systemUniquenessService.isUnique(system);
+    if (!isUnique) {
+      throw new SystemAlreadyExistsError(system.getIdValue());
+    }
 
-    // 3. 集約永続化
-    await this.systemRepository.save(system);
-
-    // 4. ドメインイベント発行
+    // 3. ドメインイベントをイベントバス（Kafka）に送信
     await this.eventBus.publishAll(system.getUncommittedEvents());
+
+    // 永続化はイベントハンドラーで実行
 
     return system.id;
   }
@@ -445,12 +624,12 @@ export class RegisterSystemHandler {
 ```typescript
 export class SystemRegistered extends DomainEvent {
   readonly systemId: SystemId;
-  readonly name: string;
+  readonly name: SystemName;
   readonly type: SystemType;
   readonly hostConfiguration: HostConfiguration;
   readonly securityClassification: SecurityClassification;
   readonly criticality: CriticalityLevel;
-  readonly initialPackages: Package[];
+  readonly initialPackages: SystemPackages;
   readonly registeredAt: Date;
 
   constructor(data: SystemRegisteredEventData) {
@@ -477,16 +656,166 @@ export class SystemRegistered extends DomainEvent {
       registeredAt: this.registeredAt
     };
   }
+
+  // イベント直列化用メソッド（JSONにはプリミティブ値を保存）
+  toSerializableData(): SerializableSystemRegisteredEventData {
+    return {
+      systemId: this.systemId.getValue(),
+      name: this.name.getValue(),
+      type: this.type,
+      hostConfiguration: this.hostConfiguration,
+      securityClassification: this.securityClassification,
+      criticality: this.criticality,
+      initialPackages: this.initialPackages.getAll(), // Package[]に変換
+      registeredAt: this.registeredAt
+    };
+  }
+
+  // イベント非直列化用ファクトリーメソッド
+  static fromSerializableData(data: SerializableSystemRegisteredEventData): SystemRegistered {
+    return new SystemRegistered({
+      systemId: new SystemId(data.systemId),
+      name: new SystemName(data.name),
+      type: data.type,
+      hostConfiguration: data.hostConfiguration,
+      securityClassification: data.securityClassification,
+      criticality: data.criticality,
+      initialPackages: SystemPackages.fromArray(data.initialPackages), // SystemPackagesに変換
+      registeredAt: data.registeredAt
+    });
+  }
+}
+
+export interface SystemRegisteredEventData {
+  systemId: SystemId;
+  name: SystemName;
+  type: SystemType;
+  hostConfiguration: HostConfiguration;
+  securityClassification: SecurityClassification;
+  criticality: CriticalityLevel;
+  initialPackages: SystemPackages;
+  registeredAt: Date;
+}
+
+export interface SerializableSystemRegisteredEventData {
+  systemId: string;
+  name: string;
+  type: SystemType;
+  hostConfiguration: HostConfiguration;
+  securityClassification: SecurityClassification;
+  criticality: CriticalityLevel;
+  initialPackages: Package[];
+  registeredAt: Date;
 }
 ```
 
-### 4.2 イベントサブスクライバー
+### 4.2 Kurrent DB Pub/Sub によるリアルタイムイベント配信
 
-**非同期処理パターン**:
-
-- Kafka Consumer Group による負荷分散
-- Dead Letter Queue によるエラーハンドリング
+- EventStoreSubscriber: Kurrent DB Pub/Subサブスクライバー
+- リアルタイム通知: イベント永続化と同時に処理
+- プッシュ型配信: ポーリング不要の効率的な配信
+- 配信後はイベントハンドラーでリードモデル更新
 - Idempotency Key による重複処理防止
+
+```typescript
+// Kurrent DB Pub/Subサブスクライバー（OutboxProcessorの代替）
+@Injectable()
+export class EventStoreSubscriber {
+  constructor(
+    private readonly kurrentClient: KurrentClient,
+    private readonly kafkaProducer: KafkaProducer,
+    private readonly logger: Logger
+  ) {}
+
+  async onModuleInit(): Promise<void> {
+    // 全イベントストリームをサブスクライブ
+    await this.kurrentClient.subscribeToAll({
+      fromPosition: 'end', // 新規イベントのみ
+      filter: {
+        streamNamePrefix: 'system-' // System関連イベントのみ
+      },
+      onEvent: this.handleEvent.bind(this),
+      onError: this.handleError.bind(this)
+    });
+
+    this.logger.info('EventStore subscription started');
+  }
+
+  private async handleEvent(resolvedEvent: ResolvedEvent): Promise<void> {
+    try {
+      const eventType = resolvedEvent.event.eventType;
+      const eventData = JSON.parse(resolvedEvent.event.data.toString());
+      const eventId = resolvedEvent.event.eventId;
+
+      // Kafkaにリアルタイム配信
+      await this.kafkaProducer.send({
+        topic: 'system-events',
+        messages: [{
+          key: eventData.systemId,
+          value: JSON.stringify({
+            eventId,
+            eventType,
+            eventData,
+            timestamp: resolvedEvent.event.created
+          }),
+          headers: {
+            eventType,
+            aggregateId: eventData.systemId
+          }
+        }]
+      });
+
+      this.logger.debug(`Event forwarded to Kafka`, {
+        eventId,
+        eventType,
+        aggregateId: eventData.systemId
+      });
+    } catch (error) {
+      this.logger.error(`Failed to forward event to Kafka`, {
+        eventId: resolvedEvent.event.eventId,
+        error: error.message
+      });
+      // エラー時はサブスクリプションを継続（イベントはスキップ）
+    }
+  }
+
+  private handleError(subscription: PersistentSubscription, reason: string, error?: Error): void {
+    this.logger.error(`EventStore subscription error`, {
+      subscriptionId: subscription.subscriptionId,
+      reason,
+      error: error?.message
+    });
+  }
+}
+
+// Infrastructure Layer - Event Handler（Kafkaから受信後のリードモデル更新）
+@EventsHandler(SystemRegisteredEvent)
+export class SystemRegisteredEventHandler {
+  constructor(
+    private readonly systemRepository: SystemRepository,
+    private readonly logger: Logger
+  ) {}
+
+  async handle(event: SystemRegisteredEvent): Promise<void> {
+    try {
+      // リードモデル（PostgreSQL）を更新
+      await this.systemRepository.save(
+        System.fromEvent(event)
+      );
+
+      this.logger.info(`Read model updated successfully`, {
+        systemId: event.systemId.getValue()
+      });
+    } catch (error) {
+      this.logger.error(`Failed to update read model`, {
+        systemId: event.systemId.getValue(),
+        error: error.message
+      });
+      throw error; // Dead Letter Queueへ
+    }
+  }
+}
+```
 
 **コンテキスト間連携**:
 
@@ -532,40 +861,42 @@ export class SystemRegistered extends DomainEvent {
 - 最終的整合性の受け入れ
 - 補償処理（Saga パターン）
 
+**ドメイン知識カプセル化**:
+
+- システム全体を引数として受け取り、内部でユニーク性判定ロジックを実装
+- ドメイン知識（何をもってユニークとするか）をドメイン層に保持
+- 真偽値を返してアプリケーション層で判定処理を実装
+
 ```typescript
 @Injectable()
 export class SystemUniquenessService {
   constructor(
     private readonly systemRepository: SystemRepository,
+    private readonly nameReservationRepository: NameReservationRepository,
     private readonly transactionManager: TransactionManager
   ) {}
 
-  async ensureUniqueness(systemName: SystemName): Promise<void> {
-    await this.transactionManager.execute(async (tx) => {
-      const existingSystem = await this.systemRepository.findByName(systemName, tx);
+  async isUnique(system: System): Promise<boolean> {
+    return await this.transactionManager.execute(async (tx) => {
+      // ドメイン知識: システム名でユニーク性を判定
+      const existingSystem = await this.systemRepository.findByName(system.getName(), tx);
 
       if (existingSystem) {
-        throw new SystemNameAlreadyExistsError(systemName.value);
+        return false;
       }
 
       // 同時登録防止のための予約レコード作成
-      await this.createNameReservation(systemName, tx);
-    });
-  }
-
-  private async createNameReservation(systemName: SystemName, tx: Transaction): Promise<void> {
-    try {
-      await tx('system_name_reservations').insert({
-        name: systemName.value,
-        reserved_at: new Date(),
-        expires_at: new Date(Date.now() + 5 * 60 * 1000) // 5分で期限切れ
-      });
-    } catch (error) {
-      if (error.code === '23505') { // UNIQUE制約違反
-        throw new SystemNameReservationConflictError(systemName.value);
+      try {
+        await this.nameReservationRepository.createReservation(system.getName(), tx);
+        return true;
+      } catch (error) {
+        // インフラ層から投げられるドメイン例外で判定
+        if (error instanceof UniqueConstraintViolationError) {
+          return false;
+        }
+        throw error;
       }
-      throw error;
-    }
+    });
   }
 }
 ```
@@ -622,7 +953,7 @@ export class SystemValidationService {
     const errors: ValidationError[] = [];
 
     // アクティブシステムのパッケージ要件チェック
-    if (system.status === SystemStatus.ACTIVE && system.packages.isEmpty()) {
+    if (system.isActive() && system.hasNoPackages()) {
       errors.push(new ValidationError(
         'ACTIVE_SYSTEM_WITHOUT_PACKAGES',
         'Active system must have at least one package'
@@ -654,8 +985,9 @@ export class SystemValidationService {
                                     system.securityClassification === SecurityClassification.RESTRICTED;
 
     if (hasEncryptionRequirement) {
-      return system.host.encryptionEnabled &&
-             system.packages.getAll().every(pkg => pkg.hasSecurityCompliance);
+      // デメテルの法則に従い、Systemオブジェクトに検証メソッドを委譲
+      return system.hasEncryptionEnabled() &&
+             system.hasSecurityCompliantPackages();
     }
 
     return true;
@@ -698,7 +1030,7 @@ export class SystemApplicationService {
     private readonly systemRepository: SystemRepository,
     private readonly systemUniquenessService: SystemUniquenessService,
     private readonly systemValidationService: SystemValidationService,
-    private readonly eventBus: DomainEventBus
+    private readonly eventStore: IEventStore
   ) {}
 
   async registerSystem(command: RegisterSystemCommand): Promise<SystemId> {
@@ -712,13 +1044,16 @@ export class SystemApplicationService {
     }
 
     // 3. 一意性制約チェック
-    await this.systemUniquenessService.ensureUniqueness(system.name);
+    const isUnique = await this.systemUniquenessService.isUnique(system);
+    if (!isUnique) {
+      throw new SystemAlreadyExistsError(system.getIdValue());
+    }
 
-    // 4. 永続化
-    await this.systemRepository.save(system);
-
-    // 5. イベント発行
-    await this.eventBus.publishAll(system.getUncommittedEvents());
+    // 4. イベントストアに永続化（Kurrent DB Pub/Subが自動配信）
+    await this.eventStore.append(
+      system.getIdValue(),
+      system.getUncommittedEvents()
+    );
 
     return system.id;
   }
@@ -741,8 +1076,11 @@ export class SystemApplicationService {
       throw new SystemValidationError(validationResult.errors);
     }
 
-    await this.systemRepository.save(system);
-    await this.eventBus.publishAll(system.getUncommittedEvents());
+    // イベントストアに永続化（Kurrent DB Pub/Subが自動配信）
+    await this.eventStore.append(
+      system.getIdValue(),
+      system.getUncommittedEvents()
+    );
   }
 
   async getSystemMetrics(systemId: SystemId): Promise<SystemMetricsDto> {
@@ -812,12 +1150,12 @@ export class SystemQueryService {
 - **キャッシュ**: Redis (頻繁アクセスデータ)
 - **検索**: Elasticsearch (全文検索)
 
-### 7.1 SystemRepository Interface
+### 7.1 Repository Interfaces
 
 **依存関係逆転パターン**:
 
-- SystemRepository: ドメイン層のインターフェース（抽象）
-- KurrentSystemRepository: インフラストラクチャ層の実装（具象）
+- Repository: ドメイン層のインターフェース（抽象）
+- Implementation: インフラストラクチャ層の実装（具象）
 - 依存関係: インフラストラクチャ → ドメイン（逆転）
 
 ```typescript
@@ -827,18 +1165,74 @@ export interface SystemRepository {
   findByName(systemName: SystemName, tx?: Transaction): Promise<System | null>;
   exists(systemId: SystemId): Promise<boolean>;
 }
+
+export interface NameReservationRepository {
+  createReservation(systemName: SystemName, tx?: Transaction): Promise<void>;
+  removeReservation(systemName: SystemName, tx?: Transaction): Promise<void>;
+  isReserved(systemName: SystemName, tx?: Transaction): Promise<boolean>;
+}
 ```
 
-### 7.2 Event Sourcing Repository実装
+### 7.2 Repository実装
 
-**パフォーマンス最適化**:
+**インフラ層での技術スタック吸収**:
 
-- スナップショット機能による復元高速化
-- 並列イベント処理
-- 接続プール最適化
-- バッチ処理による効率化
+- **ドメイン例外変換**: 技術スタック固有のエラーをドメイン例外に変換
+- **抽象化**: 具体的な技術実装をドメインから隠蔽
+- **依存関係逆転**: ドメインがインフラに依存しない設計
 
 ```typescript
+@Injectable()
+export class PostgreSQLNameReservationRepository implements NameReservationRepository {
+  constructor(
+    private readonly database: Database,
+    private readonly logger: Logger
+  ) {}
+
+  async createReservation(systemName: SystemName, tx?: Transaction): Promise<void> {
+    try {
+      const query = tx || this.database;
+      await query('system_name_reservations').insert({
+        name: systemName.value,
+        reserved_at: new Date(),
+        expires_at: new Date(Date.now() + 5 * 60 * 1000) // 5分で期限切れ
+      });
+    } catch (error) {
+      // 技術スタック固有のエラーをドメイン例外に変換
+      if (this.isUniqueConstraintViolation(error)) {
+        throw new UniqueConstraintViolationError(
+          `System name '${systemName.value}' is already reserved or exists`
+        );
+      }
+      this.logger.error('Unexpected error during name reservation', { error, systemName: systemName.getValue() });
+      throw error;
+    }
+  }
+
+  async removeReservation(systemName: SystemName, tx?: Transaction): Promise<void> {
+    const query = tx || this.database;
+    await query('system_name_reservations')
+      .where('name', systemName.value)
+      .delete();
+  }
+
+  async isReserved(systemName: SystemName, tx?: Transaction): Promise<boolean> {
+    const query = tx || this.database;
+    const reservation = await query('system_name_reservations')
+      .where('name', systemName.value)
+      .where('expires_at', '>', new Date())
+      .first();
+
+    return !!reservation;
+  }
+
+  // 技術スタック固有のエラーコードをインフラ層で吸収
+  private isUniqueConstraintViolation(error: any): boolean {
+    // PostgreSQLのUNIQUE制約違反エラーコード
+    return error.code === '23505';
+  }
+}
+
 @Injectable()
 export class KurrentSystemRepository implements SystemRepository {
   constructor(
@@ -846,22 +1240,18 @@ export class KurrentSystemRepository implements SystemRepository {
     private readonly eventSerializer: EventSerializer
   ) {}
 
-  async save(system: System): Promise<void> {
+  // イベントハンドラーから呼び出される永続化メソッド
+  async saveEvent(systemId: SystemId, event: DomainEvent): Promise<void> {
     const startTime = Date.now();
 
     try {
-      const uncommittedEvents = system.getUncommittedEvents();
-      const serializedEvents = uncommittedEvents.map(event =>
-        this.eventSerializer.serialize(event)
-      );
+      const serializedEvent = this.eventSerializer.serialize(event);
 
       await this.kurrent.appendToStream(
-        `system-${system.id.value}`,
-        system.expectedVersion,
-        serializedEvents
+        systemId.toStreamName(),
+        ExpectedVersion.Any,
+        [serializedEvent]
       );
-
-      system.markEventsAsCommitted();
 
       // メトリクス記録
       this.recordSaveMetrics(Date.now() - startTime, true);
@@ -871,15 +1261,21 @@ export class KurrentSystemRepository implements SystemRepository {
     }
   }
 
+  // リードモデル用の保存メソッド
+  async save(system: System): Promise<void> {
+    // PostgreSQLリードモデルへの保存
+    // 主にクエリ最適化とイベント再生時の復元用
+  }
+
   async getById(systemId: SystemId): Promise<System> {
-    const streamEvents = await this.kurrent.readStreamEvents(`system-${systemId.value}`);
+    const streamEvents = await this.kurrent.readStreamEvents(systemId.toStreamName());
 
     if (streamEvents.length === 0) {
       throw new SystemNotFoundError(systemId.value);
     }
 
     const domainEvents = streamEvents.map(event =>
-      this.eventSerializer.deserialize(event.data)
+      this.eventSerializer.deserialize(event.getData())
     );
 
     return System.fromHistory(domainEvents);
@@ -959,9 +1355,9 @@ export class SystemDomainError extends Error {
   }
 }
 
-export class SystemNameAlreadyExistsError extends SystemDomainError {
-  constructor(systemName: string) {
-    super(`System with name '${systemName}' already exists`, 'SYSTEM_NAME_ALREADY_EXISTS');
+export class SystemAlreadyExistsError extends SystemDomainError {
+  constructor(systemId: string) {
+    super(`System with ID '${systemId}' already exists`, 'SYSTEM_ALREADY_EXISTS');
   }
 }
 
@@ -1001,6 +1397,21 @@ export class InvalidPackageError extends SystemDomainError {
   }
 }
 
+// 値オブジェクトで使用されるバリデーションエラー
+export class InvalidSystemNameError extends SystemDomainError {
+  constructor(message: string) {
+    super(message, 'INVALID_SYSTEM_NAME_ERROR');
+  }
+}
+
+export class InvalidHostConfigurationError extends SystemDomainError {
+  constructor(message: string) {
+    super(message, 'INVALID_HOST_CONFIGURATION_ERROR');
+  }
+}
+
+// 列挙型の値は実行時にチェックされるため、コマンドレベルでのバリデーションは不要
+
 export class SecurityViolationError extends SystemDomainError {
   constructor(message: string) {
     super(message, 'SECURITY_VIOLATION_ERROR');
@@ -1011,6 +1422,40 @@ export class CyclicDependencyError extends SystemDomainError {
   constructor(message: string) {
     super(message, 'CYCLIC_DEPENDENCY_ERROR');
   }
+}
+
+// Kurrent DB Pub/Sub関連インターフェース
+export interface ResolvedEvent {
+  event: {
+    eventId: string;
+    eventType: string;
+    data: Buffer;
+    created: Date;
+  };
+  originalStreamId: string;
+  originalEventNumber: number;
+}
+
+export interface KurrentSubscriptionOptions {
+  fromPosition: 'start' | 'end' | string;
+  filter?: {
+    streamNamePrefix?: string;
+    eventTypePrefix?: string;
+  };
+  onEvent: (event: ResolvedEvent) => Promise<void>;
+  onError: (subscription: PersistentSubscription, reason: string, error?: Error) => void;
+}
+
+export interface PersistentSubscription {
+  subscriptionId: string;
+  groupName: string;
+  streamName: string;
+}
+
+export interface KurrentClient {
+  subscribeToAll(options: KurrentSubscriptionOptions): Promise<PersistentSubscription>;
+  append(streamName: string, events: DomainEvent[]): Promise<void>;
+  readStreamEvents(streamName: string): Promise<ResolvedEvent[]>;
 }
 ```
 
@@ -1030,10 +1475,17 @@ export class SystemNotFoundError extends Error {
   }
 }
 
-export class SystemNameReservationConflictError extends Error {
-  constructor(systemName: string) {
-    super(`System name '${systemName}' is currently reserved by another operation`);
-    this.name = 'SystemNameReservationConflictError';
+export class SystemReservationConflictError extends Error {
+  constructor(systemId: string) {
+    super(`System '${systemId}' is currently reserved by another operation`);
+    this.name = 'SystemReservationConflictError';
+  }
+}
+
+export class UniqueConstraintViolationError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = 'UniqueConstraintViolationError';
   }
 }
 ```
