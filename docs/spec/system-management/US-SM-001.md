@@ -13,6 +13,7 @@
 ### 1.1 設計原則
 
 **品質属性優先順位**:
+
 1. **セキュリティ**: 製造業要件に基づく情報漏洩防止最優先
 2. **可用性**: 99%以上のビジネス時間稼働率
 3. **性能**: 2秒未満のレスポンス時間
@@ -20,6 +21,7 @@
 5. **保守性**: DDD境界コンテキストによる明確な責任分離
 
 **アーキテクチャ制約**:
+
 - 完全自己ホスティング（外部SaaS禁止）
 - ISO 27001, NIST Cybersecurity Framework準拠
 - Kurrent DB (EventStore DB) によるイベントソーシング
@@ -51,12 +53,234 @@ graph TB
 ### 2.1 集約ルート (System Aggregate)
 
 **オニオンアーキテクチャにおける位置づけ**:
+
 - **ドメイン層（中核）**: システム管理の純粋なビジネスロジック（外部依存なし）
 - **アプリケーション層**: ユースケース・アプリケーションサービス（ドメイン層のみに依存）
 - **インフラストラクチャ層**: Kurrent DB、PostgreSQL、外部API実装（ドメイン・アプリケーション層に依存）
 - **プレゼンテーション層**: コントローラー・UI（アプリケーション層に依存）
 
 **責任範囲**: システム構成・パッケージ・ホスト管理
+
+#### System集約クラス仕様
+
+| クラス名 | System |
+|---------|--------|
+| 責任 | システム情報の管理・パッケージ管理・状態遷移制御 |
+| 集約ルート | Yes |
+| 継承 | AggregateRoot |
+
+**プロパティ**:
+
+| プロパティ名 | 型 | 説明 | 制約 |
+|-------------|----|----|------|
+| systemId | SystemId | システム一意識別子 | 必須、不変 |
+| name | SystemName | システム名 | 必須、1-255文字、一意 |
+| type | SystemType | システム種別 | 必須、列挙値 |
+| status | SystemStatus | システム状態 | 必須、状態機械制御 |
+| host | HostConfiguration | ホスト構成情報 | 必須 |
+| packages | SystemPackages | パッケージコレクション | 必須、ファーストクラスコレクション |
+| securityClassification | SecurityClassification | セキュリティ分類 | 必須、列挙値 |
+| criticality | CriticalityLevel | 重要度レベル | 必須、列挙値 |
+| createdDate | Date | 作成日時 | 必須、不変 |
+| lastModified | Date | 最終更新日時 | 必須 |
+| decommissionDate | Date? | 廃止日時 | 任意 |
+
+**メソッド**:
+
+| メソッド名 | 戻り値型 | 説明 | 事前条件 | 事後条件 |
+|-----------|---------|------|----------|----------|
+| register(command) | SystemRegistered | システム新規登録 | 有効なコマンド | SystemRegisteredイベント発行 |
+| updateConfiguration(config) | SystemConfigurationUpdated | 構成情報更新 | アクティブ状態 | 構成更新イベント発行 |
+| installPackage(package) | PackageInstalled | パッケージ追加 | アクティブ状態、有効パッケージ | パッケージ追加イベント発行 |
+| scaleHostResources(resources) | HostResourcesScaled | リソース拡張 | アクティブ状態 | リソース拡張イベント発行 |
+| decommission() | SystemDecommissioned | システム廃止 | 廃止可能状態 | 廃止イベント発行 |
+
+**不変条件**:
+
+- アクティブシステムは1つ以上のパッケージを持つ
+- システム名はグローバル一意
+- 廃止済みシステムは変更不可
+- セキュリティ分類の整合性保証
+
+### 2.2 SystemPackages ファーストクラスコレクション
+
+#### SystemPackagesクラス仕様
+
+| クラス名 | SystemPackages |
+|---------|----------------|
+| 責任 | パッケージコレクションの整合性管理・重複防止・依存関係検証 |
+| パターン | ファーストクラスコレクション |
+| 不変性 | Immutable |
+
+**プロパティ**:
+
+| プロパティ名 | 型 | 説明 | 制約 |
+|-------------|----|----|------|
+| packages | Package[] | パッケージリスト | 読み取り専用、重複禁止 |
+
+**メソッド**:
+
+| メソッド名 | 戻り値型 | 説明 | 事前条件 | 事後条件 |
+|-----------|---------|------|----------|----------|
+| add(package) | SystemPackages | パッケージ追加 | 重複なし、有効パッケージ | 新しいインスタンス返却 |
+| remove(packageName) | SystemPackages | パッケージ削除 | 対象パッケージ存在 | 新しいインスタンス返却 |
+| update(updatedPackage) | SystemPackages | パッケージ更新 | 対象パッケージ存在 | 新しいインスタンス返却 |
+| contains(package) | boolean | パッケージ存在確認 | - | true/false |
+| isEmpty() | boolean | 空判定 | - | true/false |
+| count() | number | パッケージ数 | - | 0以上の整数 |
+| getAll() | Package[] | 全パッケージ取得 | - | コピー配列返却 |
+| getByName(name) | Package? | 名前検索 | - | パッケージまたはnull |
+| hasVulnerabilities() | boolean | 脆弱性存在確認 | - | true/false |
+| getVulnerablePackages() | Package[] | 脆弱性パッケージ取得 | - | 脆弱性パッケージ配列 |
+
+**制約・ルール**:
+
+- パッケージ名の重複禁止
+- 高重要度脆弱性パッケージの追加禁止
+- 循環依存関係の検出・防止
+- イミュータブル操作（新しいインスタンスを返却）
+
+### 2.3 クラス関連図
+
+```mermaid
+classDiagram
+    class System {
+        <<AggregateRoot>>
+        -SystemId systemId
+        -SystemName name
+        -SystemType type
+        -SystemStatus status
+        -HostConfiguration host
+        -SystemPackages packages
+        -SecurityClassification securityClassification
+        -CriticalityLevel criticality
+        -Date createdDate
+        -Date lastModified
+        -Date? decommissionDate
+        +register(command) SystemRegistered
+        +updateConfiguration(config) SystemConfigurationUpdated
+        +installPackage(package) PackageInstalled
+        +scaleHostResources(resources) HostResourcesScaled
+        +decommission() SystemDecommissioned
+    }
+
+    class SystemPackages {
+        <<FirstClassCollection>>
+        -Package[] packages
+        +add(package) SystemPackages
+        +remove(packageName) SystemPackages
+        +update(updatedPackage) SystemPackages
+        +contains(package) boolean
+        +isEmpty() boolean
+        +count() number
+        +getAll() Package[]
+        +getByName(name) Package?
+        +hasVulnerabilities() boolean
+        +getVulnerablePackages() Package[]
+    }
+
+    class Package {
+        <<ValueObject>>
+        -string name
+        -string version
+        -string[] dependencies
+        -VulnerabilityInfo[] vulnerabilities
+        +hasKnownVulnerabilities() boolean
+        +hasHighSeverityVulnerabilities() boolean
+        +hasSecurityCompliance() boolean
+    }
+
+    class SystemId {
+        <<ValueObject>>
+        -string value
+    }
+
+    class SystemName {
+        <<ValueObject>>
+        -string value
+    }
+
+    class HostConfiguration {
+        <<ValueObject>>
+        -number cpu
+        -number memory
+        -number storage
+        -boolean encryptionEnabled
+    }
+
+    class SystemType {
+        <<Enumeration>>
+        WEB
+        API
+        DATABASE
+        BATCH
+        OTHER
+    }
+
+    class SystemStatus {
+        <<Enumeration>>
+        PLANNING
+        ACTIVE
+        MAINTENANCE
+        DECOMMISSIONED
+        CANCELLED
+    }
+
+    class SecurityClassification {
+        <<Enumeration>>
+        PUBLIC
+        INTERNAL
+        CONFIDENTIAL
+        RESTRICTED
+    }
+
+    class CriticalityLevel {
+        <<Enumeration>>
+        LOW
+        MEDIUM
+        HIGH
+        CRITICAL
+    }
+
+    System --> SystemId
+    System --> SystemName
+    System *-- SystemPackages
+    System --> HostConfiguration
+    System --> SystemType
+    System --> SystemStatus
+    System --> SecurityClassification
+    System --> CriticalityLevel
+    SystemPackages o-- Package
+```
+
+**関連説明**:
+
+- **System → SystemId**: 識別子（依存関係）
+- **System → SystemName**: システム名（依存関係）
+- **System** ***-- SystemPackages**: パッケージ管理（コンポジション関係）
+- **System → HostConfiguration**: ホスト構成（依存関係）
+- **System → SystemType**: システム種別（列挙型参照）
+- **System → SystemStatus**: システム状態（列挙型参照）
+- **System → SecurityClassification**: セキュリティ分類（列挙型参照）
+- **System → CriticalityLevel**: 重要度レベル（列挙型参照）
+- **SystemPackages o-- Package**: パッケージコレクション（集約関係）
+
+### 2.4 不変条件 (Business Invariants)
+
+**セキュリティ不変条件**:
+
+- **データ分類整合性**: セキュリティ分類変更時のカスケード検証必須
+- **アクセス制御**: セキュリティ分類に応じた適切なアクセス制御設定
+- **監査ログ**: 全ての状態変更に対する完全な監査証跡
+
+**ビジネス不変条件**:
+
+- **アクティブシステム要件**: アクティブシステムは必ず1つ以上のパッケージを持つ（`!packages.isEmpty()`）
+- **システム名一意性**: システム名はシステム全体で一意でなければならない
+- **廃止システム制約**: 廃止されたシステムはパッケージ更新不可
+- **セキュリティ分類整合性**: セキュリティ分類変更時の関連データ整合性保証
+- **パッケージ重複排除**: SystemPackagesコレクション内でのパッケージ重複禁止
+- **脆弱性制約**: 高重要度脆弱性を持つパッケージの追加禁止
 
 ```typescript
 class System extends AggregateRoot {
@@ -91,22 +315,10 @@ class System extends AggregateRoot {
 }
 ```
 
-### 2.2 不変条件 (Business Invariants)
-
-**セキュリティ不変条件**:
-- **データ分類整合性**: セキュリティ分類変更時のカスケード検証必須
-- **アクセス制御**: セキュリティ分類に応じた適切なアクセス制御設定
-- **監査ログ**: 全ての状態変更に対する完全な監査証跡
-
-**ビジネス不変条件**:
-- **アクティブシステム要件**: アクティブシステムは必ず1つ以上のパッケージを持つ
-- **システム名一意性**: システム名はシステム全体で一意でなければならない
-- **廃止システム制約**: 廃止されたシステムはパッケージ更新不可
-- **セキュリティ分類整合性**: セキュリティ分類変更時の関連データ整合性保証
-
-### 2.3 発行ドメインイベント
+### 2.5 発行ドメインイベント
 
 **イベントストーミング対応**:
+
 - `SystemRegistered`: システム新規登録完了
 - `SystemConfigurationUpdated`: システム構成更新完了
 - `SystemDecommissioned`: システム廃止完了
@@ -118,6 +330,7 @@ class System extends AggregateRoot {
 ### 3.0 アーキテクチャコンテキスト
 
 **CQRSパターン適用**:
+
 - **コマンド側**: システム登録の状態変更操作
 - **クエリ側**: PostgreSQL読み取りモデルからの検索
 - **イベント**: Kurrent DBへの永続化とKafka配信
@@ -125,6 +338,7 @@ class System extends AggregateRoot {
 ### 3.1 コマンド定義
 
 **セキュリティ考慮事項**:
+
 - 入力値検証によるインジェクション攻撃防止
 - セキュリティ分類に基づく認可チェック
 - PII（個人識別情報）マスキング対応
@@ -162,6 +376,7 @@ export class RegisterSystemCommand {
 ### 3.2 コマンドハンドラー
 
 **分散トレーシング統合**:
+
 - OpenTelemetry スパン生成
 - 処理時間・エラー率のメトリクス収集
 - GlitchTip エラートラッキング連携
@@ -196,6 +411,7 @@ export class RegisterSystemHandler {
 ### 3.3 バリデーションルール
 
 **セキュリティバリデーション**:
+
 - **SQLインジェクション防止**: パラメータ化クエリ強制
 - **XSS防止**: HTML エスケープ処理
 - **CSRF防止**: トークンベース検証
@@ -212,6 +428,7 @@ export class RegisterSystemHandler {
 ### 4.0 イベントソーシングパターン
 
 **Kurrent DB統合**:
+
 - ストリーム名: `system-{systemId}`
 - パーティション戦略: システムIDベース
 - スナップショット: 100イベント毎
@@ -220,6 +437,7 @@ export class RegisterSystemHandler {
 ### 4.1 イベント定義
 
 **イベントバージョニング戦略**:
+
 - スキーマ進化対応
 - 後方互換性保証
 - マイグレーション戦略
@@ -265,6 +483,7 @@ export class SystemRegistered extends DomainEvent {
 ### 4.2 イベントサブスクライバー
 
 **非同期処理パターン**:
+
 - Kafka Consumer Group による負荷分散
 - Dead Letter Queue によるエラーハンドリング
 - Idempotency Key による重複処理防止
@@ -272,20 +491,24 @@ export class SystemRegistered extends DomainEvent {
 **コンテキスト間連携**:
 
 **脆弱性管理コンテキスト**:
+
 - システム登録時に脆弱性スキャンを自動開始
 - パッケージ情報から既知の脆弱性を検索
 
 **関係管理コンテキスト**:
+
 - 新規システムの依存関係分析を開始
 - 既存システムとの依存関係マッピング
 
 **Read Model更新**:
+
 - PostgreSQLのシステム読み取りモデルを非同期更新
 - 検索インデックスの更新
 
 ### 4.3 イベントバージョニング
 
 **スキーマ進化戦略**:
+
 - Avro スキーマレジストリ使用
 - セマンティックバージョニング適用
 - 段階的移行サポート
@@ -304,6 +527,7 @@ export class SystemRegistered extends DomainEvent {
 ### 5.1 SystemUniquenessService
 
 **分散システム考慮事項**:
+
 - 分散ロック機構による同時実行制御
 - 最終的整合性の受け入れ
 - 補償処理（Saga パターン）
@@ -349,6 +573,7 @@ export class SystemUniquenessService {
 ### 5.2 SystemStateTransitionService
 
 **状態機械パターン**:
+
 - 有限状態オートマトン実装
 - 状態遷移の監査ログ
 - 無効遷移時の自動復旧
@@ -385,6 +610,7 @@ export class SystemStateTransitionService {
 ### 5.3 SystemValidationService
 
 **バリデーション階層**:
+
 1. **構文バリデーション**: 形式・型チェック
 2. **セマンティックバリデーション**: ビジネスルールチェック
 3. **整合性バリデーション**: 他システムとの整合性チェック
@@ -396,7 +622,7 @@ export class SystemValidationService {
     const errors: ValidationError[] = [];
 
     // アクティブシステムのパッケージ要件チェック
-    if (system.status === SystemStatus.ACTIVE && system.packages.length === 0) {
+    if (system.status === SystemStatus.ACTIVE && system.packages.isEmpty()) {
       errors.push(new ValidationError(
         'ACTIVE_SYSTEM_WITHOUT_PACKAGES',
         'Active system must have at least one package'
@@ -429,7 +655,7 @@ export class SystemValidationService {
 
     if (hasEncryptionRequirement) {
       return system.host.encryptionEnabled &&
-             system.packages.every(pkg => pkg.hasSecurityCompliance);
+             system.packages.getAll().every(pkg => pkg.hasSecurityCompliance);
     }
 
     return true;
@@ -451,6 +677,7 @@ export class SystemValidationService {
 ### 6.0 レイヤー責任分離
 
 **オニオンアーキテクチャ適用**:
+
 - **ドメイン層**: 純粋なビジネスロジック（System集約、ドメインサービス）
 - **アプリケーション層**: ユースケース実装（SystemApplicationService）
 - **インフラストラクチャ層**: 外部システム統合（Repository実装）
@@ -459,6 +686,7 @@ export class SystemValidationService {
 ### 6.1 SystemApplicationService
 
 **トランザクション境界**:
+
 - ユースケース単位でのトランザクション
 - Saga パターンによる分散トランザクション
 - 補償処理の自動実行
@@ -538,6 +766,7 @@ export class SystemApplicationService {
 ### 6.2 SystemQueryService
 
 **CQRS読み取り側最適化**:
+
 - PostgreSQL 読み取り専用レプリカ活用
 - Redis キャッシュ戦略
 - インデックス最適化
@@ -577,6 +806,7 @@ export class SystemQueryService {
 ### 7.0 イベントソーシングアーキテクチャ
 
 **ストレージ戦略**:
+
 - **書き込み**: Kurrent DB (イベントストア)
 - **読み取り**: PostgreSQL (プロジェクション)
 - **キャッシュ**: Redis (頻繁アクセスデータ)
@@ -585,6 +815,7 @@ export class SystemQueryService {
 ### 7.1 SystemRepository Interface
 
 **依存関係逆転パターン**:
+
 - SystemRepository: ドメイン層のインターフェース（抽象）
 - KurrentSystemRepository: インフラストラクチャ層の実装（具象）
 - 依存関係: インフラストラクチャ → ドメイン（逆転）
@@ -601,6 +832,7 @@ export interface SystemRepository {
 ### 7.2 Event Sourcing Repository実装
 
 **パフォーマンス最適化**:
+
 - スナップショット機能による復元高速化
 - 並列イベント処理
 - 接続プール最適化
@@ -699,12 +931,14 @@ export class KurrentSystemRepository implements SystemRepository {
 ### 8.0 回復力のあるシステム設計
 
 **障害対応パターン**:
+
 - **サーキットブレーカー**: 外部API呼び出し保護
 - **リトライ機構**: 指数バックオフによる再試行
 - **タイムアウト**: 適切なタイムアウト設定
 - **フォールバック**: 代替処理パス
 
 **監視・アラート統合**:
+
 - GlitchTip による自動エラー通知
 - Microsoft Teams エスカレーション
 - Grafana ダッシュボード可視化
@@ -712,6 +946,7 @@ export class KurrentSystemRepository implements SystemRepository {
 ### 8.1 ドメイン例外
 
 **例外階層設計**:
+
 - ビジネス例外 vs システム例外の明確な分離
 - 復旧可能性による分類
 - 多言語対応メッセージ
@@ -747,11 +982,42 @@ export class SystemValidationError extends SystemDomainError {
     super('System validation failed', 'SYSTEM_VALIDATION_ERROR');
   }
 }
+
+export class DuplicatePackageError extends SystemDomainError {
+  constructor(packageName: string) {
+    super(`Package '${packageName}' already exists in the system`, 'DUPLICATE_PACKAGE_ERROR');
+  }
+}
+
+export class PackageNotFoundError extends SystemDomainError {
+  constructor(packageName: string) {
+    super(`Package '${packageName}' not found in the system`, 'PACKAGE_NOT_FOUND_ERROR');
+  }
+}
+
+export class InvalidPackageError extends SystemDomainError {
+  constructor(message: string) {
+    super(message, 'INVALID_PACKAGE_ERROR');
+  }
+}
+
+export class SecurityViolationError extends SystemDomainError {
+  constructor(message: string) {
+    super(message, 'SECURITY_VIOLATION_ERROR');
+  }
+}
+
+export class CyclicDependencyError extends SystemDomainError {
+  constructor(message: string) {
+    super(message, 'CYCLIC_DEPENDENCY_ERROR');
+  }
+}
 ```
 
 ### 8.2 アプリケーション例外
 
 **分散システム例外処理**:
+
 - 分散トレーシングによる例外追跡
 - 障害の根本原因分析支援
 - 自動復旧メカニズム
@@ -777,12 +1043,14 @@ export class SystemNameReservationConflictError extends Error {
 ### 9.1 パフォーマンス要件
 
 **応答時間目標**:
+
 - システム登録: < 1秒
 - システム検索: < 500ms
 - 一覧表示: < 2秒
 - 分析レポート: < 10秒
 
 **スループット目標**:
+
 - 同時ユーザー: 5-10名
 - システム登録: 100件/日
 - 検索クエリ: 1,000件/日
@@ -790,11 +1058,13 @@ export class SystemNameReservationConflictError extends Error {
 ### 9.2 スケーラビリティ戦略
 
 **垂直スケーリング（Phase 1）**:
+
 - CPU・メモリリソース最適化
 - データベース接続プール調整
 - インデックス最適化
 
 **水平スケーリング（Phase 2-3）**:
+
 - 読み取りレプリカ追加
 - Kafka パーティション拡張
 - マイクロサービス分割準備
@@ -802,6 +1072,7 @@ export class SystemNameReservationConflictError extends Error {
 ### 9.3 キャッシュ戦略
 
 **Redis キャッシュレイヤー**:
+
 - システム基本情報: TTL 1時間
 - 脆弱性データ: TTL 24時間
 - ユーザーセッション: TTL 8時間
@@ -812,18 +1083,21 @@ export class SystemNameReservationConflictError extends Error {
 ### 10.1 多層防御戦略
 
 **アプリケーション層**:
+
 - 入力値検証・サニタイゼーション
 - SQL インジェクション防止
 - XSS・CSRF 対策
 - レート制限・DDoS 防止
 
 **データ層**:
+
 - データ暗号化（保存時・転送時）
 - アクセス制御（RBAC）
 - 監査ログ完全記録
 - データマスキング
 
 **インフラ層**:
+
 - ネットワークセグメンテーション
 - ファイアウォール設定
 - 侵入検知システム
@@ -832,12 +1106,14 @@ export class SystemNameReservationConflictError extends Error {
 ### 10.2 コンプライアンス対応
 
 **ISO 27001 要件**:
+
 - 情報資産分類・管理
 - リスクアセスメント
 - インシデント対応手順
 - 継続的改善プロセス
 
 **NIST Cybersecurity Framework**:
+
 - 識別（Identify）
 - 防御（Protect）
 - 検知（Detect）
@@ -849,12 +1125,14 @@ export class SystemNameReservationConflictError extends Error {
 ### 11.1 分散トレーシング
 
 **OpenTelemetry 統合**:
+
 - トレースID による処理追跡
 - スパン単位のパフォーマンス測定
 - エラー発生箇所の特定
 - 依存関係の可視化
 
 **Jaeger 分散トレーシング**:
+
 - ユーザーリクエストの完全追跡
 - マイクロサービス間の呼び出し関係
 - ボトルネック特定
@@ -863,18 +1141,21 @@ export class SystemNameReservationConflictError extends Error {
 ### 11.2 メトリクス・アラート
 
 **Prometheus メトリクス**:
+
 - アプリケーションメトリクス
 - インフラメトリクス
 - ビジネスメトリクス
 - カスタムメトリクス
 
 **Grafana ダッシュボード**:
+
 - リアルタイム監視
 - 傾向分析
 - アラート設定
 - レポート生成
 
 **Microsoft Teams 通知**:
+
 - 重要度別アラート配信
 - エスカレーション手順
 - インシデント管理
@@ -883,12 +1164,14 @@ export class SystemNameReservationConflictError extends Error {
 ### 11.3 ログ集約・分析
 
 **Enhanced ELK Stack**:
+
 - **Elasticsearch**: ログ検索・分析
 - **Logstash**: ログ処理・変換
 - **Kibana**: ログ可視化
 - **Filebeat**: ログ収集
 
 **構造化ログ**:
+
 - JSON 形式統一
 - 相関ID による追跡
 - セキュリティイベント記録
@@ -899,6 +1182,7 @@ export class SystemNameReservationConflictError extends Error {
 ### Phase 1: コア基盤 (Sprint 1-2)
 
 **アーキテクチャ基盤**:
+
 1. System集約基本実装
 2. RegisterSystemコマンド・ハンドラー
 3. SystemRegisteredイベント
@@ -907,6 +1191,7 @@ export class SystemNameReservationConflictError extends Error {
 ### Phase 2: ドメインロジック (Sprint 3-4)
 
 **ビジネスロジック実装**:
+
 1. SystemUniquenessService実装
 2. SystemValidationService実装
 3. エラーハンドリング強化
@@ -915,6 +1200,7 @@ export class SystemNameReservationConflictError extends Error {
 ### Phase 3: 統合・最適化 (Sprint 5-6)
 
 **システム統合**:
+
 1. SystemApplicationService実装
 2. SystemQueryService実装
 3. Read Model Projection実装
@@ -925,24 +1211,28 @@ export class SystemNameReservationConflictError extends Error {
 ### 13.1 テスト階層
 
 **単体テスト（80%カバレッジ目標）**:
+
 - ドメインオブジェクト完全テスト
 - ビジネスロジック検証
 - エッジケース・例外処理
 - プロパティベーステスト
 
 **統合テスト**:
+
 - Repository 実装テスト
 - 外部API統合テスト
 - イベントソーシング整合性
 - データベース操作検証
 
 **コンポーネントテスト**:
+
 - アプリケーションサービステスト
 - イベントハンドラーテスト
 - API エンドポイントテスト
 - エラーシナリオテスト
 
 **契約テスト**:
+
 - Producer/Consumer 契約
 - API 仕様準拠性
 - スキーマ互換性
@@ -951,12 +1241,14 @@ export class SystemNameReservationConflictError extends Error {
 ### 13.2 パフォーマンステスト
 
 **負荷テスト**:
+
 - 想定負荷での安定性確認
 - レスポンス時間測定
 - リソース使用量監視
 - ボトルネック特定
 
 **ストレステスト**:
+
 - 限界負荷での挙動確認
 - 障害時の復旧能力
 - データ整合性保証
@@ -965,12 +1257,14 @@ export class SystemNameReservationConflictError extends Error {
 ### 13.3 セキュリティテスト
 
 **OWASP Top 10 検証**:
+
 - 自動脆弱性スキャン
 - ペネトレーションテスト
 - コード静的解析
 - 依存関係脆弱性チェック
 
 **コンプライアンステスト**:
+
 - ISO 27001 要件検証
 - データ保護法対応
 - 監査ログ完全性
@@ -981,12 +1275,14 @@ export class SystemNameReservationConflictError extends Error {
 ### 14.1 デプロイメント戦略
 
 **Blue-Green デプロイメント**:
+
 - ゼロダウンタイム更新
 - 即座のロールバック機能
 - データベースマイグレーション
 - 段階的トラフィック切り替え
 
 **カナリアリリース**:
+
 - 小規模ユーザーでの先行検証
 - メトリクス監視による自動判定
 - 異常検知時の自動ロールバック
@@ -995,12 +1291,14 @@ export class SystemNameReservationConflictError extends Error {
 ### 14.2 障害対応・復旧
 
 **災害復旧計画**:
+
 - RTO（目標復旧時間）: 4時間
 - RPO（目標復旧時点）: 1時間
 - バックアップ・復元手順
 - 通信・エスカレーション計画
 
 **インシデント対応**:
+
 - 自動インシデント検知
 - 段階的エスカレーション
 - 根本原因分析（RCA）
@@ -1009,12 +1307,14 @@ export class SystemNameReservationConflictError extends Error {
 ### 14.3 容量計画・拡張
 
 **モニタリング指標**:
+
 - CPU・メモリ使用率
 - ディスク容量・IOPS
 - ネットワーク帯域
 - データベース接続数
 
 **拡張戦略**:
+
 - リソース使用率85%でアラート
 - 90%で自動スケーリング
 - 予測的拡張計画
@@ -1041,12 +1341,14 @@ export class SystemNameReservationConflictError extends Error {
 ### 16.1 技術的負債の予防
 
 **アーキテクチャ負債**:
+
 - 定期的なアーキテクチャレビュー
 - 技術選択の継続的評価
 - リファクタリング計画
 - パフォーマンス改善
 
 **コード品質負債**:
+
 - 自動コード品質チェック
 - 技術的負債の可視化
 - 継続的リファクタリング
@@ -1055,18 +1357,21 @@ export class SystemNameReservationConflictError extends Error {
 ### 16.2 リスク管理
 
 **技術リスク**:
+
 - 外部依存関係の脆弱性
 - スケーラビリティ限界
 - データ整合性リスク
 - セキュリティ脅威
 
 **ビジネスリスク**:
+
 - 要件変更への対応性
 - 法規制変更への適応
 - 競合技術の台頭
 - 人材リスク
 
 **緩和策**:
+
 - 定期的なリスク評価
 - 代替技術の調査・検証
 - チーム知識の共有
@@ -1075,6 +1380,7 @@ export class SystemNameReservationConflictError extends Error {
 ---
 
 **文書管理**:
+
 - **作成者**: ソフトウェアアーキテクト
 - **文書種別**: システム設計仕様書
 - **対象**: System Management Context - System Aggregate
