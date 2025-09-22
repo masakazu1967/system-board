@@ -673,7 +673,6 @@ export class SecurityClassificationGuard implements CanActivate {
 export const SecurityClassification = (classification: SecurityClassification) =>
   SetMetadata('securityClassification', classification);
 ```
-```
 
 ## 5. セキュリティ例外定義
 
@@ -708,12 +707,14 @@ export class SecurityClassificationViolationError extends SystemDomainError {
 ### 6.1 層別実装チェックリスト
 
 **ドメイン層**:
+
 - [ ] System集約のセキュリティビジネスルール実装
 - [ ] SecurityClassification列挙型定義
 - [ ] 値オブジェクトのZodバリデーション統合
 - [ ] ドメイン不変条件実装
 
 **アプリケーション層**:
+
 - [ ] SystemAuthorizationService実装
 - [ ] SystemSecurityPolicy実装
 - [ ] PIIProtectionService実装
@@ -723,6 +724,7 @@ export class SecurityClassificationViolationError extends SystemDomainError {
 - [ ] コマンドハンドラー認可チェック統合
 
 **インフラストラクチャ層**:
+
 - [ ] SystemSecurityDto実装
 - [ ] SecurityClassificationGuard実装
 - [ ] コントローラーセキュリティ統合
@@ -730,6 +732,7 @@ export class SecurityClassificationViolationError extends SystemDomainError {
 - [ ] セキュリティ例外ハンドリング
 
 **横断関心事**:
+
 - [ ] ユーザーコンテキスト管理
 - [ ] セキュリティ監査ログ統合
 - [ ] 分散トレーシング統合
@@ -737,11 +740,13 @@ export class SecurityClassificationViolationError extends SystemDomainError {
 ### 6.2 層別テスト要件
 
 **ドメイン層テスト**:
+
 - [ ] System集約のセキュリティビジネスルールテスト
 - [ ] 値オブジェクトのZodバリデーションテスト
 - [ ] ドメイン不変条件テスト
 
 **アプリケーション層テスト**:
+
 - [ ] 各セキュリティ分類での認可テスト
 - [ ] ロール階層テスト
 - [ ] PIIProtectionServiceテスト
@@ -749,11 +754,13 @@ export class SecurityClassificationViolationError extends SystemDomainError {
 - [ ] コマンドハンドラー統合テスト
 
 **インフラストラクチャ層テスト**:
+
 - [ ] SecurityClassificationGuardテスト
 - [ ] SystemSecurityDtoフィルタリングテスト
 - [ ] コントローラーセキュリティ統合テスト
 
 **統合テスト**:
+
 - [ ] 不正アクセス検出テスト
 - [ ] セキュリティ分類変更テスト
 - [ ] 監査ログ記録テスト
@@ -763,18 +770,21 @@ export class SecurityClassificationViolationError extends SystemDomainError {
 ### 6.3 コンプライアンス・ガバナンス要件
 
 **セキュリティフレームワーク適合性**:
+
 - [ ] ISO 27001 統制マッピングと実装確認
 - [ ] NIST Cybersecurity Framework適合性確認
 - [ ] OWASP Top 10 対策確認
 - [ ] 職務分離統制実装確認
 
 **アーキテクチャガバナンス**:
+
 - [ ] オニオンアーキテクチャ原則遵守確認
 - [ ] SOLID原則適用確認
 - [ ] 依存性逆転原則遵守確認
 - [ ] 層分離の適切性確認
 
 **データ保護コンプライアンス**:
+
 - [ ] PII保護法令適合性確認
 - [ ] 個人情報保護法適合性確認
 - [ ] データガバナンスポリシー遵守確認

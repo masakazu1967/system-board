@@ -1,12 +1,12 @@
 # US-SM-001: システム新規登録 - System集約設計仕様書
 
-**担当**: ソフトウェアアーキテクト
-**作成日**: 2025-09-20
-**更新日**: 2025-09-20 (アーキテクチャ強化版)
-**Issue**: #120 (US-SM-001-001: システム集約の設計)
-**親Issue**: #34 (US-SM-001: システム新規登録)
-**見積**: 30分
-**アーキテクチャパターン**: オニオンアーキテクチャ + DDD + CQRS + イベントソーシング
+**担当**: ソフトウェアアーキテクト  
+**作成日**: 2025-09-20  
+**更新日**: 2025-09-20 (アーキテクチャ強化版)  
+**Issue**: #120 (US-SM-001-001: システム集約の設計)  
+**親Issue**: #34 (US-SM-001: システム新規登録)  
+**見積**: 30分  
+**アーキテクチャパターン**: オニオンアーキテクチャ + DDD + CQRS + イベントソーシング  
 
 ## 1. アーキテクチャ概要
 
@@ -322,11 +322,9 @@ export const SystemNameSchema = z
   })
   .transform((value) => value.trim());
 
-export class SystemName {
-  private readonly value: string;
-
+export class SystemName extends PrimitiveValueObject<string> {
   private constructor(value: string) {
-    this.value = value;
+    super(value);
   }
 
   // Event Sourcing用：ドメインイベントから復元時の高速作成
@@ -362,14 +360,6 @@ export class SystemName {
     };
   }
 
-  public getValue(): string {
-    return this.value;
-  }
-
-  public equals(other: SystemName): boolean {
-    return this.value === other.value;
-  }
-
   public toString(): string {
     return this.value;
   }
@@ -391,12 +381,11 @@ export const SystemIdSchema = z
     message: 'System ID must be a valid UUID v4 format'
   });
 
-export class SystemId {
-  private readonly value: string;
+export class SystemId extends PrimitiveValueObject<string> {
   private static readonly STREAM_PREFIX = 'system-';
 
   private constructor(value: string) {
-    this.value = value;
+    super(value);
   }
 
   // Event Sourcing用：ドメインイベントから復元時の高速作成
@@ -443,16 +432,8 @@ export class SystemId {
     };
   }
 
-  public getValue(): string {
-    return this.value;
-  }
-
   public toStreamName(): string {
     return `${SystemId.STREAM_PREFIX}${this.value}`;
-  }
-
-  public equals(other: SystemId): boolean {
-    return this.value === other.value;
   }
 
   public toString(): string {
@@ -498,25 +479,21 @@ export const HostConfigurationSchema = z.object({
 
 export type HostConfigurationData = z.infer<typeof HostConfigurationSchema>;
 
-export class HostConfiguration {
-  constructor(
-    private readonly cpu: number,
-    private readonly memory: number, // GB
-    private readonly storage: number, // GB
-    private readonly encryptionEnabled: boolean
-  ) {
+export class HostConfiguration extends ValueObject<HostConfigurationData> {
+  constructor(value: HostConfigurationData) {
+    super(value);
     // コンストラクタでのバリデーションは無し（createUnsafe用）
   }
 
   // Event Sourcing用：ドメインイベントから復元時の高速作成
   public static createUnsafe(data: HostConfigurationData): HostConfiguration {
-    return new HostConfiguration(data.cpu, data.memory, data.storage, data.encryptionEnabled);
+    return new HostConfiguration(data);
   }
 
   // 通常作成：バリデーション付き
   public static create(data: HostConfigurationData): HostConfiguration {
     const validatedData = HostConfigurationSchema.parse(data);
-    return new HostConfiguration(validatedData.cpu, validatedData.memory, validatedData.storage, validatedData.encryptionEnabled);
+    return new HostConfiguration(validatedData);
   }
 
   // バリデーションのみ実行
@@ -542,35 +519,28 @@ export class HostConfiguration {
   }
 
   public isEncryptionEnabled(): boolean {
-    return this.encryptionEnabled;
+    return this.props.encryptionEnabled;
   }
 
   public getCpu(): number {
-    return this.cpu;
+    return this.props.cpu;
   }
 
   public getMemory(): number {
-    return this.memory;
+    return this.props.memory;
   }
 
   public getStorage(): number {
-    return this.storage;
+    return this.props.storage;
   }
 
   public toData(): HostConfigurationData {
     return {
-      cpu: this.cpu,
-      memory: this.memory,
-      storage: this.storage,
-      encryptionEnabled: this.encryptionEnabled
+      cpu: this.props.cpu,
+      memory: this.props.memory,
+      storage: this.props.storage,
+      encryptionEnabled: this.props.encryptionEnabled
     };
-  }
-
-  public equals(other: HostConfiguration): boolean {
-    return this.cpu === other.cpu &&
-           this.memory === other.memory &&
-           this.storage === other.storage &&
-           this.encryptionEnabled === other.encryptionEnabled;
   }
 }
 ```
@@ -593,9 +563,8 @@ export class HostConfiguration {
 - **脆弱性制約**: 高重要度脆弱性を持つパッケージの追加禁止
 
 ```typescript
-class System extends AggregateRoot {
+type SystemProps = {
   // Identity
-  private systemId: SystemId;
   private name: SystemName;
   private type: SystemType;
   private status: SystemStatus;
@@ -610,55 +579,36 @@ class System extends AggregateRoot {
   private createdDate: Date;
   private lastModified: Date;
   private decommissionDate?: Date;
+};
 
+class System extends AggregateRoot<SystemId, SystemProps> {
   // AggregateRootから継承されるフィールド
   private uncommittedEvents: DomainEvent[] = [];
 
-  constructor(
-    systemId: SystemId,
-    name: SystemName,
-    type: SystemType,
-    status: SystemStatus,
-    host: HostConfiguration,
-    packages: SystemPackages,
-    securityClassification: SecurityClassification,
-    criticality: CriticalityLevel,
-    createdDate: Date,
-    lastModified: Date,
-    decommissionDate?: Date
-  ) {
-    super();
-    this.systemId = systemId;
-    this.name = name;
-    this.type = type;
-    this.status = status;
-    this.host = host;
-    this.packages = packages;
-    this.securityClassification = securityClassification;
-    this.criticality = criticality;
-    this.createdDate = createdDate;
-    this.lastModified = lastModified;
-    this.decommissionDate = decommissionDate;
+  constructor(id: SystemId, props: SystemProps) {
+    super(id, props);
   }
 
   // Factory Method (static)
   public static register(command: RegisterSystemCommand): System {
     // 値オブジェクト作成時にバリデーションが実行される（DRY原則に従う）
-    const systemId = SystemId.generate();
-    const systemName = new SystemName(command.name); // ここでバリデーション実行
-    const hostConfig = new HostConfiguration(command.hostConfiguration); // ここでバリデーション実行
+    const id = SystemId.generate();
+    const name = new SystemName(command.name); // ここでバリデーション実行
+    const host = new HostConfiguration(command.hostConfiguration); // ここでバリデーション実行
 
     const system = new System(
       systemId,
-      systemName,
-      command.type,
-      SystemStatus.PLANNING,
-      hostConfig,
-      SystemPackages.empty(),
-      command.securityClassification,
-      command.criticality,
-      new Date(),
-      new Date()
+      {
+        name,
+        type: command.type,
+        status: SystemStatus.PLANNING,
+        host,
+        packages: SystemPackages.empty(),
+        securityClassification: command.securityClassification,
+        criticality: command.criticality,
+        createdDate: new Date(),
+        lastModified: new Date()
+      }
     );
 
     // ドメインイベントを発行
@@ -855,7 +805,7 @@ sequenceDiagram
 
 ```typescript
 // ドメイン層: ビジネスルールベースのセキュリティ制約
-export class System extends AggregateRoot {
+export class System extends AggregateRoot<SystemId, SystemProps> {
   // セキュリティ分類に基づくビジネスルール
   public hasEncryptionRequirement(): boolean {
     return this.securityClassification === SecurityClassification.CONFIDENTIAL ||
@@ -953,9 +903,9 @@ export class RegisterSystemCommand {
 
 **イベントソーシングアプローチ**:
 
-- コマンドハンドラーは集約の永続化は行わない
-- ドメインイベントをイベントバス（Kafka）に送信のみ
-- イベントハンドラーで永続化処理を実行
+- コマンドハンドラーはEventStoreに直接永続化
+- EventStore Subscriptionが自動的にKafkaに配信
+- 他コンテキストはKafkaからイベントを受信
 
 ```typescript
 @CommandHandler(RegisterSystemCommand)
@@ -963,7 +913,7 @@ export class RegisterSystemHandler {
   constructor(
     private readonly authorizationService: SystemAuthorizationService,
     private readonly systemUniquenessService: SystemUniquenessService,
-    private readonly eventBus: DomainEventBus,
+    private readonly eventStore: IEventStore,
     private readonly auditLogger: SecurityAuditLogger,
     private readonly piiProtectionService: PIIProtectionService
   ) {}
@@ -978,12 +928,18 @@ export class RegisterSystemHandler {
       throw new SystemAlreadyExistsError(system.getIdValue());
     }
 
-    // 3. ドメインイベントをイベントバス（Kafka）に送信
-    await this.eventBus.publishAll(system.getUncommittedEvents());
+    // 3. ドメインイベントをEventStoreに直接永続化
+    const events = system.getUncommittedEvents();
+    await this.eventStore.appendEvents(
+      system.getSystemId().toStreamName(),
+      events,
+      system.getVersion()
+    );
 
-    // 永続化はイベントハンドラーで実行
+    // EventStore Subscriptionが自動的にKafkaに配信
 
-    return system.id;
+    system.markEventsAsCommitted();
+    return system.getSystemId();
   }
 }
 ```
@@ -2015,44 +1971,58 @@ export interface DomainEventPublisher {
   publish(event: DomainEvent): Promise<void>;
 }
 
-// EventStore永続化専用ハンドラー
-@EventsHandler(DomainEvent)
-export class EventStoreEventHandler {
+// EventStore Subscription実装（NestJS CQRS統合）
+@Injectable()
+export class EventStoreSubscriptionService implements OnModuleInit {
   constructor(
-    private readonly eventStore: IEventStore,
+    private readonly eventStoreClient: EventStoreDBClient,
+    private readonly eventBus: EventBus,
     private readonly logger: Logger
   ) {}
 
-  async handle(event: DomainEvent): Promise<void> {
-    try {
-      // ドメインイベントをEventStoreに永続化
-      await this.eventStore.appendEvents(
-        event.aggregateId,
-        [event],
-        event.aggregateVersion
-      );
+  async onModuleInit(): Promise<void> {
+    // システム管理コンテキストのイベント購読
+    await this.subscribeToSystemEvents();
+  }
 
-      this.logger.debug('Event persisted to EventStore', {
-        eventType: event.eventType,
-        aggregateId: event.aggregateId,
-        aggregateVersion: event.aggregateVersion
-      });
-    } catch (error) {
-      this.logger.error('Failed to persist event to EventStore', {
-        eventType: event.eventType,
-        aggregateId: event.aggregateId,
-        error: error.message
-      });
-      throw error;
+  private async subscribeToSystemEvents(): Promise<void> {
+    await this.eventStoreClient.subscribeToAll({
+      fromPosition: 'end',
+      filter: { streamNamePrefix: 'system-' },
+      onEvent: this.handleSystemEvent.bind(this),
+      onError: this.handleSubscriptionError.bind(this)
+    });
+  }
+
+  private async handleSystemEvent(resolvedEvent: ResolvedEvent): Promise<void> {
+    const eventType = resolvedEvent.event.eventType;
+    const eventData = JSON.parse(resolvedEvent.event.data.toString());
+
+    // コンテキスト間配信のためKafkaに再配信
+    const domainEvent = this.reconstructDomainEvent(eventType, eventData);
+    await this.eventBus.publish(domainEvent);
+  }
+
+  private reconstructDomainEvent(eventType: string, eventData: any): any {
+    switch (eventType) {
+      case 'SystemRegistered':
+        return SystemRegistered.fromEventStore(eventData);
+      default:
+        this.logger.warn('Unknown event type', { eventType });
+        return null;
     }
+  }
+
+  private handleSubscriptionError(subscription: any, reason: string, error?: Error): void {
+    this.logger.error('EventStore subscription error', { reason, error: error?.message });
   }
 }
 
-// ドメインイベントパブリッシャー実装（NestJS CQRS統合）
+// ドメインイベントKafka配信実装
 @Injectable()
-export class CqrsDomainEventPublisher implements DomainEventPublisher {
+export class KafkaDomainEventPublisher {
   constructor(
-    private readonly eventBus: EventBus,
+    private readonly kafkaService: KafkaService,
     private readonly logger: Logger
   ) {}
 
