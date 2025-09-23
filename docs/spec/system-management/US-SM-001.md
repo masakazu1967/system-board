@@ -913,7 +913,7 @@ export class RegisterSystemHandler {
   constructor(
     private readonly authorizationService: SystemAuthorizationService,
     private readonly systemUniquenessService: SystemUniquenessService,
-    private readonly eventStore: IEventStore,
+    private readonly eventStore: EventStore,
     private readonly auditLogger: SecurityAuditLogger,
     private readonly piiProtectionService: PIIProtectionService
   ) {}
@@ -1319,7 +1319,7 @@ export class EventStoreSubscriber implements OnModuleInit {
 
 // Read Model更新ハンドラー（CQRS読み取り側）
 @EventsHandler(SystemRegisteredEvent)
-export class SystemRegisteredEventHandler implements IEventHandler<SystemRegisteredEvent> {
+export class SystemRegisteredEventHandler implements EventHandler<SystemRegisteredEvent> {
   constructor(
     private readonly systemReadModelRepository: SystemReadModelRepository,
     private readonly logger: Logger
@@ -1347,10 +1347,6 @@ export class SystemRegisteredEventHandler implements IEventHandler<SystemRegiste
   }
 }
 ```
-
-```text
-
-
 
 **簡素化による改善点**:
 
@@ -1396,7 +1392,7 @@ export class SystemRegisteredEventHandler implements IEventHandler<SystemRegiste
 **アプリケーションサービス**: ユースケースオーケストレーション（アプリケーション層）
 **依存関係の方向**: インフラストラクチャ → アプリケーション → ドメイン
 
-### 5.1 SystemUniquenessService
+### 5.1 SystemExistenceService
 
 **分散システム考慮事項**:
 
@@ -1412,20 +1408,20 @@ export class SystemRegisteredEventHandler implements IEventHandler<SystemRegiste
 
 ```typescript
 @Injectable()
-export class SystemUniquenessService {
+export class SystemExistenceService {
   constructor(
     private readonly systemRepository: SystemRepository,
     private readonly nameReservationRepository: NameReservationRepository,
     private readonly transactionManager: TransactionManager
   ) {}
 
-  async isUnique(system: System): Promise<boolean> {
+  async exists(system: System): Promise<boolean> {
     return await this.transactionManager.execute(async (tx) => {
       // ドメイン知識: システム名でユニーク性を判定
       const existingSystem = await this.systemRepository.findByName(system.getName(), tx);
 
-      if (existingSystem) {
-        return false;
+      if (existingSystem && !system.equals(existingSystem)) {
+        return true;
       }
 
       // 同時登録防止のための予約レコード作成
@@ -1444,7 +1440,7 @@ export class SystemUniquenessService {
 }
 ```
 
-### 5.2 System集約内状態遷移管理
+### 5.3 System集約内状態遷移管理
 
 **DDD原則準拠の集約内状態管理**:
 
@@ -1879,27 +1875,50 @@ export class SystemApplicationService {
 @Injectable()
 export class SystemQueryService {
   constructor(
-    private readonly systemReadModelRepository: SystemReadModelRepository
+    private readonly database: Database
   ) {}
 
-  async findSystemsByType(systemType: SystemType): Promise<SystemSummaryDto[]> {
-    const systems = await this.systemReadModelRepository.findByType(systemType);
-    return systems.map(SystemSummaryDto.fromReadModel);
+  async findByType(systemType: SystemType): Promise<SystemReadModel[]> {
+    const query = `
+      SELECT * FROM system_read_models
+      WHERE type = $1 AND status != 'DECOMMISSIONED'
+      ORDER BY created_date DESC
+    `;
+    const result = await this.database.query(query, [systemType]);
+    return result.rows.map(row => SystemReadModel.fromDatabaseRow(row));
   }
 
-  async findSystemsWithVulnerabilities(): Promise<SystemVulnerabilityDto[]> {
-    const systems = await this.systemReadModelRepository.findSystemsWithVulnerabilities();
-    return systems.map(SystemVulnerabilityDto.fromReadModel);
+  async findSystemsWithVulnerabilities(): Promise<SystemReadModel[]> {
+    const query = `
+      SELECT * FROM system_read_models
+      WHERE vulnerability_count > 0
+      ORDER BY vulnerability_severity DESC, created_date DESC
+    `;
+    const result = await this.database.query(query);
+    return result.rows.map(row => SystemReadModel.fromDatabaseRow(row));
   }
 
-  async findExpiredSystems(): Promise<SystemSummaryDto[]> {
-    const systems = await this.systemReadModelRepository.findExpiredSystems();
-    return systems.map(SystemSummaryDto.fromReadModel);
+  async findExpiredSystems(): Promise<SystemReadModel[]> {
+    const query = `
+      SELECT * FROM system_read_models
+      WHERE decommission_date < NOW()
+      ORDER BY decommission_date ASC
+    `;
+    const result = await this.database.query(query);
+    return result.rows.map(row => SystemReadModel.fromDatabaseRow(row));
   }
 
-  async getSystemStatistics(): Promise<SystemStatisticsDto> {
-    const stats = await this.systemReadModelRepository.getSystemStatistics();
-    return SystemStatisticsDto.fromReadModel(stats);
+  async getSystemStatistics(): Promise<SystemStatistics> {
+    const query = `
+      SELECT
+        COUNT(*) as total_systems,
+        COUNT(CASE WHEN status = 'ACTIVE' THEN 1 END) as active_systems,
+        COUNT(CASE WHEN vulnerability_count > 0 THEN 1 END) as vulnerable_systems,
+        AVG(vulnerability_count) as avg_vulnerabilities
+      FROM system_read_models
+    `;
+    const result = await this.database.query(query);
+    return SystemStatistics.fromDatabaseRow(result.rows[0]);
   }
 }
 ```
@@ -1925,9 +1944,9 @@ export class SystemQueryService {
 
 ```typescript
 // Event Sourcing専用インターフェース
-export interface IEventStore {
+export interface EventStore {
   appendEvents(streamId: string, events: DomainEvent[], expectedVersion: number): Promise<void>;
-  getEvents(streamId: string, fromVersion?: number): Promise<DomainEvent[]>;
+  getEvents(streamId: string, fromVersion?: number, maxCount?: number): Promise<DomainEvent[]>;
   getSnapshot(streamId: string): Promise<AggregateSnapshot | null>;
   saveSnapshot(streamId: string, snapshot: AggregateSnapshot): Promise<void>;
   subscribeToStream(streamId: string, onEvent: (event: DomainEvent) => Promise<void>): Promise<void>;
@@ -1938,16 +1957,20 @@ export interface SystemRepository {
   // 集約復元のみ（イベント履歴から再構築）
   getById(systemId: SystemId): Promise<System>;
   findByName(systemName: SystemName): Promise<System | null>;
-  exists(systemId: SystemId): Promise<boolean>;
 }
 
-// Read Model更新専用リポジトリ（CQRS読み取り側）
-export interface SystemReadModelRepository {
-  save(systemReadModel: SystemReadModel): Promise<void>;
+// CQRS読み取り側クエリサービス（アプリケーション層）
+export interface SystemQueryService {
   findByType(systemType: SystemType): Promise<SystemReadModel[]>;
   findSystemsWithVulnerabilities(): Promise<SystemReadModel[]>;
   findExpiredSystems(): Promise<SystemReadModel[]>;
   getSystemStatistics(): Promise<SystemStatistics>;
+}
+
+// Read Model更新専用リポジトリ（インフラストラクチャ層）
+export interface SystemReadModelRepository {
+  save(systemReadModel: SystemReadModel): Promise<void>;
+  delete(systemId: SystemId): Promise<void>;
 }
 
 export interface NameReservationRepository {
@@ -1965,10 +1988,32 @@ export interface AggregateSnapshot {
   timestamp: Date;
 }
 
-// ドメインイベント発行インターフェース（SRP準拠）
+// ドメインイベント発行インターフェース（アプリケーション層）
 export interface DomainEventPublisher {
   publishAll(events: DomainEvent[]): Promise<void>;
   publish(event: DomainEvent): Promise<void>;
+}
+
+// メッセージブローカー抽象化インターフェース（インフラストラクチャ層）
+export interface MessageBrokerService {
+  send(topic: string, message: MessageEnvelope): Promise<void>;
+  sendBatch(topic: string, messages: MessageEnvelope[]): Promise<void>;
+  subscribe(topic: string, handler: MessageHandler): Promise<void>;
+  close(): Promise<void>;
+}
+
+// メッセージエンベロープ
+export interface MessageEnvelope {
+  key: string;
+  value: string;
+  headers?: Record<string, string>;
+  partition?: number;
+  timestamp?: Date;
+}
+
+// メッセージハンドラー
+export interface MessageHandler {
+  handle(message: MessageEnvelope): Promise<void>;
 }
 
 // EventStore Subscription実装（NestJS CQRS統合）
@@ -1986,43 +2031,71 @@ export class EventStoreSubscriptionService implements OnModuleInit {
   }
 
   private async subscribeToSystemEvents(): Promise<void> {
-    await this.eventStoreClient.subscribeToAll({
-      fromPosition: 'end',
-      filter: { streamNamePrefix: 'system-' },
-      onEvent: this.handleSystemEvent.bind(this),
-      onError: this.handleSubscriptionError.bind(this)
-    });
+    try {
+      const subscription = this.eventStoreClient.subscribeToAll({
+        fromPosition: undefined, // 最新の位置から開始
+        filter: {
+          streamNamePrefix: ['system-'] // システム関連ストリームのみ
+        },
+        resolveLinkTos: true
+      });
+
+      for await (const resolvedEvent of subscription) {
+        try {
+          await this.handleSystemEvent(resolvedEvent);
+        } catch (error) {
+          this.logger.error('Failed to handle event', {
+            eventId: resolvedEvent.event.id,
+            eventType: resolvedEvent.event.type,
+            error: error.message
+          });
+        }
+      }
+    } catch (error) {
+      this.logger.error('EventStore subscription failed', { error: error.message });
+      throw error;
+    }
   }
 
   private async handleSystemEvent(resolvedEvent: ResolvedEvent): Promise<void> {
-    const eventType = resolvedEvent.event.eventType;
-    const eventData = JSON.parse(resolvedEvent.event.data.toString());
+    const eventType = resolvedEvent.event.type;
+    const eventData = new TextDecoder().decode(resolvedEvent.event.data);
+    const parsedData = JSON.parse(eventData);
 
     // コンテキスト間配信のためKafkaに再配信
-    const domainEvent = this.reconstructDomainEvent(eventType, eventData);
-    await this.eventBus.publish(domainEvent);
+    const domainEvent = this.reconstructDomainEvent(eventType, parsedData);
+
+    if (domainEvent) {
+      await this.eventBus.publish(domainEvent);
+
+      this.logger.debug('Event republished to EventBus', {
+        eventType,
+        eventId: resolvedEvent.event.id,
+        streamId: resolvedEvent.event.streamId
+      });
+    }
   }
 
   private reconstructDomainEvent(eventType: string, eventData: any): any {
     switch (eventType) {
       case 'SystemRegistered':
         return SystemRegistered.fromEventStore(eventData);
+      case 'SystemConfigurationUpdated':
+        return SystemConfigurationUpdated.fromEventStore(eventData);
+      case 'SystemDecommissioned':
+        return SystemDecommissioned.fromEventStore(eventData);
       default:
         this.logger.warn('Unknown event type', { eventType });
         return null;
     }
   }
-
-  private handleSubscriptionError(subscription: any, reason: string, error?: Error): void {
-    this.logger.error('EventStore subscription error', { reason, error: error?.message });
-  }
 }
 
-// ドメインイベントKafka配信実装
+// ドメインイベント発行実装（Kafkaベース）
 @Injectable()
-export class KafkaDomainEventPublisher {
+export class KafkaDomainEventPublisher implements DomainEventPublisher {
   constructor(
-    private readonly kafkaService: KafkaService,
+    private readonly messageBroker: MessageBrokerService,
     private readonly logger: Logger
   ) {}
 
@@ -2031,37 +2104,175 @@ export class KafkaDomainEventPublisher {
       return;
     }
 
-    try {
-      // NestJS CQRS EventBusに発行（非同期処理、At-least-once配信）
-      for (const event of events) {
-        await this.eventBus.publish(event);
-      }
+    const publishPromises = events.map(event => this.publish(event));
+    await Promise.all(publishPromises);
+  }
 
-      this.logger.debug('All events published successfully', {
-        eventCount: events.length,
-        eventTypes: events.map(e => e.eventType)
+  async publish(event: DomainEvent): Promise<void> {
+    try {
+      const topic = this.determineTopicByEventType(event.eventType);
+
+      const message: MessageEnvelope = {
+        key: event.aggregateId,
+        value: JSON.stringify({
+          eventId: event.eventId,
+          eventType: event.eventType,
+          aggregateId: event.aggregateId,
+          aggregateType: event.aggregateType,
+          aggregateVersion: event.aggregateVersion,
+          occurredOn: event.occurredOn.toISOString(),
+          correlationId: event.correlationId,
+          causationId: event.causationId,
+          data: event.getData()
+        }),
+        headers: {
+          'content-type': 'application/json',
+          'event-type': event.eventType,
+          'correlation-id': event.correlationId,
+          'aggregate-type': event.aggregateType
+        },
+        timestamp: event.occurredOn
+      };
+
+      await this.messageBroker.send(topic, message);
+
+      this.logger.debug('Event published successfully', {
+        eventType: event.eventType,
+        aggregateId: event.aggregateId,
+        topic
       });
     } catch (error) {
-      this.logger.error('Failed to publish events', {
-        eventCount: events.length,
+      this.logger.error('Failed to publish event', {
+        eventType: event.eventType,
+        aggregateId: event.aggregateId,
         error: error.message
       });
       throw error;
     }
   }
 
-  async publish(event: DomainEvent): Promise<void> {
-    try {
-      await this.eventBus.publish(event);
+  private determineTopicByEventType(eventType: string): string {
+    // イベントタイプごとのトピック振り分け
+    const topicMap = {
+      // System Management Context
+      'SystemRegistered': 'system-events',
+      'SystemConfigurationUpdated': 'system-events',
+      'SystemDecommissioned': 'system-events',
+      'SystemSecurityAlert': 'security-events',
 
-      this.logger.debug('Event published successfully', {
-        eventType: event.eventType,
-        aggregateId: event.aggregateId
+      // Vulnerability Management Context
+      'VulnerabilityDetected': 'vulnerability-events',
+      'VulnerabilityScanCompleted': 'vulnerability-events',
+      'VulnerabilityResolved': 'vulnerability-events',
+
+      // Task Management Context
+      'TaskCreated': 'task-events',
+      'TaskCompleted': 'task-events',
+      'HighPriorityTaskCreated': 'urgent-events'
+    };
+
+    return topicMap[eventType] || 'domain-events';
+  }
+}
+
+// Kafka実装クラス（インフラストラクチャ層）
+@Injectable()
+export class KafkaMessageBrokerService implements MessageBrokerService {
+  constructor(
+    private readonly kafkaService: KafkaService,
+    private readonly logger: Logger
+  ) {}
+
+  async send(topic: string, message: MessageEnvelope): Promise<void> {
+    try {
+      await this.kafkaService.send({
+        topic,
+        messages: [{
+          key: message.key,
+          value: message.value,
+          headers: message.headers,
+          partition: message.partition,
+          timestamp: message.timestamp?.getTime().toString()
+        }]
+      });
+
+      this.logger.debug('Message sent to Kafka', {
+        topic,
+        key: message.key,
+        headers: message.headers
       });
     } catch (error) {
-      this.logger.error('Failed to publish event', {
-        eventType: event.eventType,
-        aggregateId: event.aggregateId,
+      this.logger.error('Failed to send message to Kafka', {
+        topic,
+        key: message.key,
+        error: error.message
+      });
+      throw error;
+    }
+  }
+
+  async sendBatch(topic: string, messages: MessageEnvelope[]): Promise<void> {
+    try {
+      const kafkaMessages = messages.map(message => ({
+        key: message.key,
+        value: message.value,
+        headers: message.headers,
+        partition: message.partition,
+        timestamp: message.timestamp?.getTime().toString()
+      }));
+
+      await this.kafkaService.send({
+        topic,
+        messages: kafkaMessages
+      });
+
+      this.logger.debug('Batch messages sent to Kafka', {
+        topic,
+        messageCount: messages.length
+      });
+    } catch (error) {
+      this.logger.error('Failed to send batch messages to Kafka', {
+        topic,
+        messageCount: messages.length,
+        error: error.message
+      });
+      throw error;
+    }
+  }
+
+  async subscribe(topic: string, handler: MessageHandler): Promise<void> {
+    try {
+      await this.kafkaService.subscribe({
+        topics: [topic],
+        handler: async (message) => {
+          const envelope: MessageEnvelope = {
+            key: message.key?.toString() || '',
+            value: message.value?.toString() || '',
+            headers: message.headers || {},
+            partition: message.partition,
+            timestamp: message.timestamp ? new Date(parseInt(message.timestamp)) : new Date()
+          };
+
+          await handler.handle(envelope);
+        }
+      });
+
+      this.logger.info('Subscribed to Kafka topic', { topic });
+    } catch (error) {
+      this.logger.error('Failed to subscribe to Kafka topic', {
+        topic,
+        error: error.message
+      });
+      throw error;
+    }
+  }
+
+  async close(): Promise<void> {
+    try {
+      await this.kafkaService.close();
+      this.logger.info('Kafka connection closed');
+    } catch (error) {
+      this.logger.error('Failed to close Kafka connection', {
         error: error.message
       });
       throw error;
@@ -2132,7 +2343,7 @@ export class PostgreSQLNameReservationRepository implements NameReservationRepos
 
 // Event Store実装（Event Sourcing原則準拠）
 @Injectable()
-export class EventStoreDBEventStore implements IEventStore {
+export class EventStoreDBEventStore implements EventStore {
   constructor(
     private readonly eventStoreClient: EventStoreDBClient,
     private readonly eventSerializer: EventSerializer,
@@ -2143,12 +2354,28 @@ export class EventStoreDBEventStore implements IEventStore {
     const startTime = Date.now();
 
     try {
-      const serializedEvents = events.map(event => this.eventSerializer.serialize(event));
+      const eventData: EventData[] = events.map(event => ({
+        id: event.eventId,
+        type: event.eventType,
+        data: new TextEncoder().encode(JSON.stringify(event.getData())),
+        metadata: new TextEncoder().encode(JSON.stringify({
+          aggregateId: event.aggregateId,
+          aggregateType: event.aggregateType,
+          aggregateVersion: event.aggregateVersion,
+          occurredOn: event.occurredOn.toISOString(),
+          correlationId: event.correlationId,
+          causationId: event.causationId
+        }))
+      }));
+
+      const expectedRevision = expectedVersion === -1
+        ? ExpectedRevision.NoStream
+        : expectedVersion;
 
       await this.eventStoreClient.appendToStream(
         streamId,
-        expectedVersion,
-        serializedEvents
+        eventData,
+        { expectedRevision }
       );
 
       this.recordSaveMetrics(Date.now() - startTime, true, events.length);
@@ -2165,18 +2392,58 @@ export class EventStoreDBEventStore implements IEventStore {
     }
   }
 
-  async getEvents(streamId: string, fromVersion?: number): Promise<DomainEvent[]> {
+  async getEvents(streamId: string, fromVersion?: number, maxCount?: number): Promise<DomainEvent[]> {
     try {
-      const streamEvents = await this.eventStoreClient.readStream(streamId, {
-        fromRevision: fromVersion || 0
-      });
+      const readOptions: ReadStreamOptions = {
+        direction: Direction.Forwards,
+        fromRevision: fromVersion || 0,
+        maxCount: maxCount
+      };
 
-      return streamEvents.map(event =>
-        this.eventSerializer.deserialize(event.event?.data)
-      );
+      const events: DomainEvent[] = [];
+
+      for await (const resolvedEvent of this.eventStoreClient.readStream(streamId, readOptions)) {
+        const eventData = new TextDecoder().decode(resolvedEvent.event.data);
+        const metadata = new TextDecoder().decode(resolvedEvent.event.metadata);
+
+        const parsedData = JSON.parse(eventData);
+        const parsedMetadata = JSON.parse(metadata);
+
+        // ドメインイベントを再構築
+        const domainEvent = this.reconstructDomainEvent(
+          resolvedEvent.event.type,
+          parsedData,
+          parsedMetadata
+        );
+
+        if (domainEvent) {
+          events.push(domainEvent);
+        }
+      }
+
+      return events;
     } catch (error) {
+      if (error.code === 'STREAM_NOT_FOUND') {
+        return []; // ストリームが存在しない場合は空配列を返す
+      }
+
       this.logger.error(`Failed to read events`, { streamId, error: error.message });
       throw error;
+    }
+  }
+
+  private reconstructDomainEvent(eventType: string, data: any, metadata: any): DomainEvent | null {
+    // イベントタイプに応じてドメインイベントを再構築
+    switch (eventType) {
+      case 'SystemRegistered':
+        return SystemRegistered.fromEventStore(data, metadata);
+      case 'SystemConfigurationUpdated':
+        return SystemConfigurationUpdated.fromEventStore(data, metadata);
+      case 'SystemDecommissioned':
+        return SystemDecommissioned.fromEventStore(data, metadata);
+      default:
+        this.logger.warn('Unknown event type for reconstruction', { eventType });
+        return null;
     }
   }
 
@@ -2231,7 +2498,7 @@ export class EventStoreDBEventStore implements IEventStore {
 @Injectable()
 export class EventStoreSystemRepository implements SystemRepository {
   constructor(
-    private readonly eventStore: IEventStore,
+    private readonly eventStore: EventStore,
     private readonly logger: Logger
   ) {}
 
@@ -2316,26 +2583,9 @@ export class EventStoreSystemRepository implements SystemRepository {
       return null;
     }
   }
-
-  async exists(systemId: SystemId): Promise<boolean> {
-    try {
-      // 軽量な存在確認（イベント数のカウントのみ）
-      const events = await this.eventStore.getEvents(systemId.toStreamName());
-      return events.length > 0;
-    } catch (error) {
-      if (error instanceof SystemNotFoundError) {
-        return false;
-      }
-      this.logger.error(`Failed to check system existence`, {
-        systemId: systemId.getValue(),
-        error: error.message
-      });
-      return false;
-    }
-  }
 }
 
-// Read Model Repository（CQRS読み取り側）
+// Read Model更新リポジトリ実装（インフラストラクチャ層）
 @Injectable()
 export class PostgreSQLSystemReadModelRepository implements SystemReadModelRepository {
   constructor(
@@ -2358,34 +2608,22 @@ export class PostgreSQLSystemReadModelRepository implements SystemReadModelRepos
     }
   }
 
-  async findByType(systemType: SystemType): Promise<SystemReadModel[]> {
-    return await this.database('system_read_models')
-      .where('type', systemType)
-      .where('status', '!=', 'DECOMMISSIONED');
-  }
+  async delete(systemId: SystemId): Promise<void> {
+    try {
+      await this.database('system_read_models')
+        .where('system_id', systemId.getValue())
+        .del();
 
-  async findSystemsWithVulnerabilities(): Promise<SystemReadModel[]> {
-    return await this.database('system_read_models')
-      .where('has_vulnerabilities', true)
-      .orderBy('criticality_level', 'desc');
-  }
-
-  async findExpiredSystems(): Promise<SystemReadModel[]> {
-    return await this.database('system_read_models')
-      .where('end_of_life_date', '<', new Date())
-      .where('status', 'ACTIVE');
-  }
-
-  async getSystemStatistics(): Promise<SystemStatistics> {
-    const stats = await this.database('system_read_models')
-      .select(
-        this.database.raw('COUNT(*) as total_systems'),
-        this.database.raw('COUNT(CASE WHEN status = \'ACTIVE\' THEN 1 END) as active_systems'),
-        this.database.raw('COUNT(CASE WHEN has_vulnerabilities = true THEN 1 END) as vulnerable_systems')
-      )
-      .first();
-
-    return new SystemStatistics(stats);
+      this.logger.debug('Read model deleted', {
+        systemId: systemId.getValue()
+      });
+    } catch (error) {
+      this.logger.error(`Failed to delete read model`, {
+        systemId: systemId.getValue(),
+        error: error.message
+      });
+      throw error;
+    }
   }
 }
 ```
@@ -2585,14 +2823,86 @@ export interface PersistentSubscription {
 }
 
 export interface EventStoreDBClient {
-  subscribeToAll(options: EventStoreSubscriptionOptions): Promise<PersistentSubscription>;
-  appendToStream(streamName: string, expectedVersion: any, events: any[]): Promise<void>;
-  readStream(streamName: string): Promise<any[]>;
-  readAll(options: any): Promise<any>;
+  // EventStore DB v5 正式API
+  appendToStream(
+    streamName: string,
+    events: EventData[],
+    options?: AppendToStreamOptions
+  ): Promise<AppendResult>;
+
+  readStream(
+    streamName: string,
+    options?: ReadStreamOptions
+  ): AsyncIterable<ResolvedEvent>;
+
+  subscribeToAll(
+    options: SubscribeToAllOptions
+  ): AsyncIterable<ResolvedEvent>;
+
+  subscribeToStream(
+    streamName: string,
+    options: SubscribeToStreamOptions
+  ): AsyncIterable<ResolvedEvent>;
+
+  // ストリーム存在確認用
+  readStreamMetadata(streamName: string): Promise<ReadResult>;
 }
-  subscribeToAll(options: KurrentSubscriptionOptions): Promise<PersistentSubscription>;
-  append(streamName: string, events: DomainEvent[]): Promise<void>;
-  readStreamEvents(streamName: string): Promise<ResolvedEvent[]>;
+
+// EventStore DB関連型定義
+export interface EventData {
+  id: string;
+  type: string;
+  data: Uint8Array;
+  metadata?: Uint8Array;
+}
+
+export interface AppendToStreamOptions {
+  expectedRevision?: ExpectedRevision;
+}
+
+export interface ReadStreamOptions {
+  direction?: Direction;
+  fromRevision?: StreamPosition;
+  maxCount?: number;
+}
+
+export interface SubscribeToAllOptions {
+  fromPosition?: Position;
+  filter?: EventTypeFilter;
+  resolveLinkTos?: boolean;
+}
+
+export interface SubscribeToStreamOptions {
+  fromRevision?: StreamPosition;
+  resolveLinkTos?: boolean;
+}
+
+export interface ResolvedEvent {
+  event: RecordedEvent;
+  link?: RecordedEvent;
+  originalStreamId: string;
+  originalPosition: Position;
+}
+
+export interface RecordedEvent {
+  id: string;
+  type: string;
+  streamId: string;
+  streamRevision: number;
+  data: Uint8Array;
+  metadata: Uint8Array;
+  created: Date;
+}
+
+export enum Direction {
+  Forwards = 'forwards',
+  Backwards = 'backwards'
+}
+
+export enum ExpectedRevision {
+  Any = 'any',
+  NoStream = 'no_stream',
+  StreamExists = 'stream_exists'
 }
 ```
 
