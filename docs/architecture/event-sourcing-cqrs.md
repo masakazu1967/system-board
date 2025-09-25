@@ -14,10 +14,11 @@ System Boardにおけるイベントソーシング＋CQRSの実装設計とコ�
 - **最終的整合性**: コンテキスト間はイベント駆動による最終的整合性
 - **責務分離**: コマンド（書き込み）とクエリ（読み取り）の完全分離
 - **冪等性保証**: イベント重複処理の安全性確保
+- **ダブルコミット回避**: Kafkaへの配信成功後にEventStoreへ保存（トランザクション境界統一）
 
-## 2. EventStore保存タイミング戦略
+## 2. ダブルコミット回避戦略
 
-### 2.1 イベント保存フロー
+### 2.1 修正されたイベント保存フロー
 
 ```plantuml
 @startuml event_store_flow
@@ -27,9 +28,9 @@ participant "Client" as Client
 participant "API Controller" as API
 participant "Command Handler" as CH
 participant "Domain Aggregate" as DA
-participant "EventStore DB" as ES
-participant "EventStore Subscriber" as Sub
 participant "Kafka" as Kafka
+participant "EventStore Subscriber" as ESub
+participant "EventStore DB" as ES
 participant "Event Handler" as EH
 participant "Read Model (PostgreSQL)" as RM
 
@@ -43,17 +44,17 @@ DA -> DA: Validate business rules
 DA -> DA: Generate domain events
 DA --> CH: System + uncommitted events
 
-CH -> ES: append(events)
-note right: Infrastructure Layer\nImmediate persistence
-ES --> CH: Success (aggregate version)
+CH -> Kafka: publish(SystemRegistered)
+note right: Infrastructure Layer\nKafka first (avoid double commit)
+Kafka --> CH: Success (delivery confirmation)
 CH --> API: SystemId
 API --> Client: 201 Created
 
-note over ES,Sub: EventStore Subscription\n(Pull-based, asynchronous)
-ES -->> Sub: event stream notification
-Sub -> Sub: Reconstruct domain event
-Sub -> Kafka: publish(SystemRegistered)
-note right: At-least-once delivery
+note over Kafka,ESub: EventStore Persistence\n(Message-driven)
+Kafka ->> ESub: SystemRegistered
+ESub -> ES: append(event)
+note right: Persistent event storage\nfor replay & audit
+ES --> ESub: Success
 
 note over Kafka,EH: Context Collaboration\n(Cross-context events)
 Kafka ->> EH: SystemRegistered
@@ -61,21 +62,23 @@ EH -> EH: Check idempotency
 EH -> RM: Update projection
 EH --> Kafka: ACK
 
-note over Client,RM: Eventually Consistent\nRead Model updated
+note over Client,RM: Eventually Consistent\nAll systems updated
 @enduml
 ```
 
-### 2.2 重要なタイミング制御
+### 2.2 ダブルコミット回避の重要なタイミング制御
 
-**即座の永続化**:
+**Kafkaファースト配信**:
 
-- ドメインイベントはコマンド処理と同一トランザクションでEventStoreに保存
-- ビジネスロジック実行後、即座にイベントストアにコミット
+- ドメインイベントは先にKafkaに配信（単一トランザクション境界）
+- ビジネスロジック実行後、即座にKafkaへコミット
+- Kafkaの配信確認を受けてからクライアントへレスポンス
 
-**非同期配信**:
+**EventStore非同期永続化**:
 
-- EventStore Subscriptionによるプル型配信
-- Kafkaへの再配信でコンテキスト間連携
+- Kafkaメッセージを受信してEventStoreに保存
+- イベント再生とコンプライアンス監査用の永続ストレージ
+- Kafkaを一次配信チャネル、EventStoreを永続アーカイブとして位置づけ
 
 ## 3. コンテキスト間コラボレーション実装
 
@@ -91,8 +94,9 @@ box "System Management Context" #lightblue
 end box
 
 box "Event Infrastructure" #lightgray
-    participant "EventStore DB" as ES
     participant "Kafka" as Kafka
+    participant "EventStore Subscriber" as ESub
+    participant "EventStore DB" as ES
 end box
 
 box "Vulnerability Management Context" #lightgreen
@@ -109,21 +113,28 @@ end box
 
 SA -> SA: register(command)
 SA -> SRE: Generate SystemRegistered
-SRE -> ES: Store event
-ES -> Kafka: Publish SystemRegistered
+SRE -> Kafka: Publish SystemRegistered
+note right: Kafka first (avoid double commit)
 
 note over Kafka: Cross-Context Event Distribution
+
+Kafka ->> ESub: SystemRegistered
+ESub -> ES: Store event
+note right: Asynchronous persistence
 
 Kafka ->> VEH: SystemRegistered
 VEH -> VSA: initiateScan(systemId, packages)
 VSA -> VSIE: Generate VulnScanInitiated
-VSIE -> ES: Store event
-ES -> Kafka: Publish VulnScanInitiated
+VSIE -> Kafka: Publish VulnScanInitiated
+note right: Kafka first
+
+Kafka ->> ESub: VulnScanInitiated
+ESub -> ES: Store event
 
 Kafka ->> TEH: VulnScanInitiated
 TEH -> TA: createTask(scanTask)
 TA -> TCE: Generate TaskCreated
-TCE -> ES: Store event
+TCE -> Kafka: Publish TaskCreated
 
 note over SA,TA: Three contexts collaborate\nthrough domain events
 @enduml
@@ -142,8 +153,9 @@ box "Vulnerability Management Context" #lightgreen
 end box
 
 box "Event Infrastructure" #lightgray
-    participant "EventStore DB" as ES
     participant "Kafka" as Kafka
+    participant "EventStore Subscriber" as ESub
+    participant "EventStore DB" as ES
 end box
 
 box "Task Management Context" #lightyellow
@@ -162,20 +174,24 @@ VSS -> VA: detectVulnerability(cveId, severity)
 VA -> VA: Validate CVSS score
 alt CVSS >= 9.0 (Critical)
     VA -> VDE: Generate VulnerabilityDetected\n(severity: CRITICAL)
-    VDE -> ES: Store event
-    ES -> Kafka: Publish VulnerabilityDetected
+    VDE -> Kafka: Publish VulnerabilityDetected
+    note right: Kafka first (avoid double commit)
 
     note over Kafka: Critical vulnerability triggers\nmultiple context responses
+
+    Kafka ->> ESub: VulnerabilityDetected
+    ESub -> ES: Store event
+    note right: Asynchronous persistence
 
     Kafka ->> VTEH: VulnerabilityDetected
     VTEH -> TA: createRemediationTask(\n  priority: HIGH,\n  deadline: 3 days\n)
     TA -> HPTE: Generate HighPriorityTask
-    HPTE -> ES: Store event
+    HPTE -> Kafka: Publish HighPriorityTask
 
     Kafka ->> SEH: VulnerabilityDetected
     SEH -> SA: raiseSecurityAlert(cveId)
     SA -> SSAE: Generate SystemSecurityAlert
-    SSAE -> ES: Store event
+    SSAE -> Kafka: Publish SystemSecurityAlert
 else CVSS < 9.0
     note right: Standard vulnerability\nprocessing
 end
@@ -343,64 +359,95 @@ export class TaskCreated extends DomainEvent {
 }
 ```
 
-## 5. EventStore Subscription実装
+## 5. Kafka-EventStore統合実装
 
-### 5.1 EventStore購読パターン
+### 5.1 Kafkaメッセージ受信→EventStore保存パターン
 
 ```typescript
 @Injectable()
-export class EventStoreSubscriber implements OnModuleInit {
+export class EventStoreKafkaSubscriber implements OnModuleInit {
   constructor(
     private readonly eventStoreClient: EventStoreDBClient,
-    private readonly eventBus: EventBus,
+    private readonly kafkaService: KafkaService,
     private readonly logger: Logger
   ) {}
 
   async onModuleInit(): Promise<void> {
-    // システム管理コンテキストのイベント購読
-    await this.subscribeToSystemEvents();
-
-    // 脆弱性管理コンテキストのイベント購読
-    await this.subscribeToVulnerabilityEvents();
-
-    // タスク管理コンテキストのイベント購読
-    await this.subscribeToTaskEvents();
+    // Kafkaからイベントを受信してEventStoreに保存
+    await this.subscribeToKafkaEvents();
   }
 
-  private async subscribeToSystemEvents(): Promise<void> {
-    await this.eventStoreClient.subscribeToAll({
-      fromPosition: 'end',
-      filter: { streamNamePrefix: 'system-' },
-      onEvent: this.handleSystemEvent.bind(this),
-      onError: this.handleSubscriptionError.bind(this)
+  private async subscribeToKafkaEvents(): Promise<void> {
+    await this.kafkaService.subscribe({
+      topics: ['system-events', 'vulnerability-events', 'task-events'],
+      groupId: 'eventstore-persistence-group'
+    });
+
+    this.kafkaService.run({
+      eachMessage: async ({ topic, partition, message }) => {
+        await this.handleKafkaMessage(topic, message);
+      }
     });
   }
 
-  private async handleSystemEvent(resolvedEvent: ResolvedEvent): Promise<void> {
-    const eventType = resolvedEvent.event.eventType;
-    const eventData = JSON.parse(resolvedEvent.event.data.toString());
+  private async handleKafkaMessage(topic: string, message: any): Promise<void> {
+    try {
+      const eventData = JSON.parse(message.value.toString());
+      const eventType = message.headers['event-type'].toString();
 
-    // コンテキスト間配信のためKafkaに再配信
-    switch (eventType) {
-      case 'SystemRegistered':
-        const systemRegistered = SystemRegistered.fromEventStore(eventData);
-        await this.eventBus.publish(systemRegistered);
-        break;
+      // EventStoreに永続化
+      await this.persistToEventStore(eventData, eventType);
 
-      case 'SystemSecurityAlert':
-        const securityAlert = SystemSecurityAlert.fromEventStore(eventData);
-        await this.eventBus.publish(securityAlert);
-        break;
+      this.logger.debug('Event persisted to EventStore from Kafka', {
+        eventType,
+        eventId: eventData.eventId,
+        topic
+      });
+    } catch (error) {
+      this.logger.error('Failed to persist event to EventStore', {
+        topic,
+        error: error.message
+      });
+      throw error;
     }
+  }
+
+  private async persistToEventStore(eventData: any, eventType: string): Promise<void> {
+    const streamName = this.getStreamName(eventData.aggregateType, eventData.aggregateId);
+
+    const eventToStore = {
+      eventId: eventData.eventId,
+      eventType: eventType,
+      data: eventData.data,
+      metadata: {
+        correlationId: eventData.correlationId,
+        causationId: eventData.causationId,
+        occurredOn: eventData.occurredOn
+      }
+    };
+
+    await this.eventStoreClient.appendToStream(streamName, [eventToStore], {
+      expectedRevision: 'any'
+    });
+  }
+
+  private getStreamName(aggregateType: string, aggregateId: string): string {
+    const streamMap = {
+      'System': `system-${aggregateId}`,
+      'Vulnerability': `vuln-${aggregateId}`,
+      'Task': `task-${aggregateId}`,
+      'Relationship': `relation-${aggregateId}`
+    };
+    return streamMap[aggregateType] || `unknown-${aggregateId}`;
   }
 }
 ```
 
-### 5.2 Kafkaイベント配信
+### 5.2 Command Handler統合Kafkaイベント配信
 
 ```typescript
 @Injectable()
-export class KafkaEventPublisher implements DomainEventPublisher {
+export class KafkaFirstEventPublisher implements DomainEventPublisher {
   constructor(
     private readonly kafkaService: KafkaService,
     private readonly logger: Logger
@@ -434,12 +481,13 @@ export class KafkaEventPublisher implements DomainEventPublisher {
       }
     };
 
+    // Kafkaへの配信成功を待ってからCommand Handler完了
     await this.kafkaService.send({
       topic,
       messages: [message]
     });
 
-    this.logger.debug('Event published to Kafka', {
+    this.logger.debug('Event published to Kafka first (no double commit)', {
       eventType: event.eventType,
       aggregateId: event.aggregateId,
       topic
@@ -640,11 +688,12 @@ export class TaskVulnerabilityDetectedHandler
 
 ## 7. 実装上の重要なポイント
 
-### 7.1 イベント保存タイミング
+### 7.1 ダブルコミット回避のイベント保存タイミング
 
-- **即座保存**: ドメインイベントはコマンド処理完了と同時にEventStoreに永続化
-- **非同期配信**: EventStore Subscriptionで他コンテキストへの配信は非同期
-- **最終的整合性**: コンテキスト間は最終的整合性を受け入れ
+- **Kafkaファースト**: ドメインイベントはコマンド処理完了と同時にKafkaに配信
+- **EventStore非同期永続化**: Kafkaメッセージ受信後にEventStoreへ保存
+- **単一トランザクション境界**: Kafkaへの配信成功のみでコマンド処理完了
+- **最終的整合性**: コンテキスト間とEventStoreへの永続化は最終的整合性を受け入れ
 
 ### 7.2 エラー処理戦略
 
@@ -658,4 +707,11 @@ export class TaskVulnerabilityDetectedHandler
 - **インデックス最適化**: EventStore検索性能向上
 - **パーティション戦略**: 集約ID単位でのイベント分散
 
-この設計により、System Boardの各コンテキストは疎結合を保ちながら、ドメインイベントを通じて効率的にコラボレーションできる。
+この設計により、System Boardの各コンテキストは疎結合を保ちながら、ダブルコミット問題を回避してドメインイベントを通じて効率的にコラボレーションできる。
+
+### 7.4 ダブルコミット回避の利点
+
+- **トランザクション境界の単純化**: Kafkaへの配信成功のみでコマンド完了
+- **障害時の一貫性保証**: Kafka配信失敗時はコマンド自体が失敗
+- **EventStore復旧可能性**: KafkaメッセージからいつでもEventStoreを再構築可能
+- **パフォーマンス向上**: 2フェーズコミット不要でレスポンス時間短縮

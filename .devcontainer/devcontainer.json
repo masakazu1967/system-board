@@ -18,13 +18,9 @@
       "version": "latest"
     },
     "ghcr.io/devcontainers/features/java:1": {
+      "version": "21",
       "installMaven": true,
-      "version": "latest",
-      "jdkDistro": "ms",
-      "gradleVersion": "latest",
-      "mavenVersion": "latest",
-      "antVersion": "latest",
-      "groovyVersion": "latest"
+      "installGradle": true
     },
     "ghcr.io/devcontainers/features/node:1": {
       "nodeGypDependencies": true,
