@@ -2,21 +2,44 @@
 
 **作成日**: 2025-09-22
 **更新日**: 2025-09-22
-**アーキテクチャパターン**: Event Sourcing + CQRS + EventStore DB + Kafka
+**アーキテクチャパターン**: Event Sourcing + CQRS + Kurrent DB + Kafka
 
 ## 1. 概要
 
-System Boardにおけるイベントソーシング＋CQRSの実装設計とコンテキスト間コラボレーション戦略。EventStore DBを真実の源泉とし、Kafkaによるイベントストリーミングでコンテキスト間の非同期連携を実現する。
+System Boardにおけるイベントソーシング＋CQRSの実装設計とコンテキスト間コラボレーション戦略。Kurrent DBを真実の源泉とし、Kafkaによるイベントストリーミングでコンテキスト間の非同期連携を実現する。
 
 ### 1.1 核心原則
 
-- **Single Source of Truth**: EventStore DBがすべてのドメインイベントの真実の源泉
+- **Single Source of Truth**: Kurrent DBがすべてのドメインイベントの真実の源泉
 - **最終的整合性**: コンテキスト間はイベント駆動による最終的整合性
 - **責務分離**: コマンド（書き込み）とクエリ（読み取り）の完全分離
 - **冪等性保証**: イベント重複処理の安全性確保
-- **ダブルコミット回避**: Kafkaへの配信成功後にEventStoreへ保存（トランザクション境界統一）
+- **ダブルコミット回避**: Kafkaへの配信成功後にKurrent DBへ保存（トランザクション境界統一）
 
 ## 2. ダブルコミット回避戦略
+
+### 2.0 ダブルコミット問題とは
+
+**ダブルコミットの問題**：
+
+- Kurrent DBとKafkaの2つの異なるストレージシステムへの書き込みが必要
+- 各システムが独立したトランザクション境界を持つため、部分的な失敗が発生する可能性
+- Kurrent DB書き込み成功 + Kafka配信失敗 → データ不整合
+- Kurrent DB書き込み失敗 + Kafka配信成功 → データ不整合
+
+**従来設計の問題点**：
+
+```text
+CH -> ES: append(events)     // 成功
+ES -> Kafka: publish()       // 失敗 ← 不整合発生
+```
+
+**回避の必要性**：
+
+- **データ一貫性**: 2つのシステム間でのデータ同期ずれを防止
+- **システムの信頼性**: 部分的失敗による予期しない状態を回避
+- **運用の複雑性軽減**: 障害復旧時の手動データ修正作業を削減
+- **パフォーマンス向上**: 2フェーズコミットによる性能劣化を回避
 
 ### 2.1 修正されたイベント保存フロー
 
@@ -30,7 +53,7 @@ participant "Command Handler" as CH
 participant "Domain Aggregate" as DA
 participant "Kafka" as Kafka
 participant "EventStore Subscriber" as ESub
-participant "EventStore DB" as ES
+participant "Kurrent DB" as ES
 participant "Event Handler" as EH
 participant "Read Model (PostgreSQL)" as RM
 
@@ -50,7 +73,7 @@ Kafka --> CH: Success (delivery confirmation)
 CH --> API: SystemId
 API --> Client: 201 Created
 
-note over Kafka,ESub: EventStore Persistence\n(Message-driven)
+note over Kafka,ESub: Kurrent DB Persistence\n(Message-driven)
 Kafka ->> ESub: SystemRegistered
 ESub -> ES: append(event)
 note right: Persistent event storage\nfor replay & audit
@@ -74,13 +97,523 @@ note over Client,RM: Eventually Consistent\nAll systems updated
 - ビジネスロジック実行後、即座にKafkaへコミット
 - Kafkaの配信確認を受けてからクライアントへレスポンス
 
-**EventStore非同期永続化**:
+**Kurrent DB非同期永続化**:
 
-- Kafkaメッセージを受信してEventStoreに保存
+- Kafkaメッセージを受信してKurrent DBに保存
 - イベント再生とコンプライアンス監査用の永続ストレージ
-- Kafkaを一次配信チャネル、EventStoreを永続アーカイブとして位置づけ
+- Kafkaを一次配信チャネル、Kurrent DBを永続アーカイブとして位置づけ
 
 ## 3. コンテキスト間コラボレーション実装
+
+### 3.0 コラボレーションクラス設計
+
+#### 3.0.1 コアクラス構造
+
+```plantuml
+@startuml collaboration_class_diagram
+!theme plain
+
+package "Shared Domain Layer" {
+  abstract class AggregateRoot {
+    +aggregateId: AggregateId
+    +version: number
+    +uncommittedEvents: DomainEvent[]
+    +markEventsAsCommitted(): void
+    +getUncommittedEvents(): DomainEvent[]
+    #addEvent(event: DomainEvent): void
+  }
+
+  abstract class DomainEvent {
+    +eventId: string
+    +eventType: string
+    +aggregateId: string
+    +aggregateType: string
+    +aggregateVersion: number
+    +occurredOn: Date
+    +correlationId: string
+    +causationId?: string
+    +abstract getData(): any
+  }
+}
+
+package "System Management Context" {
+  package "Domain Layer" {
+    class SystemAggregate extends AggregateRoot {
+      +static readonly AGGREGATE_NAME: string = 'System'
+      +systemId: SystemId
+      +name: SystemName
+      +packages: SystemPackages
+      +securityClassification: SecurityClassification
+      +register(command: RegisterSystemCommand): void
+      +raiseSecurityAlert(cveId: string): void
+    }
+  }
+
+  package "Application Layer" {
+    class SystemService {
+      +eventPublisher: EventPublisher
+      +registerSystem(command: RegisterSystemCommand): Promise<void>
+      +handleSecurityAlert(command: RaiseSecurityAlertCommand): Promise<void>
+    }
+
+    class SystemEventHandler implements EventHandler {
+      +systemService: SystemService
+      +idempotentEventHandler: IdempotentEventHandler
+      +handle(event: VulnerabilityDetected): Promise<void>
+    }
+  }
+
+  package "Infrastructure Layer" {
+    class SystemRepository {
+      +save(aggregate: SystemAggregate): Promise<void>
+      +findById(systemId: SystemId): Promise<SystemAggregate>
+    }
+  }
+}
+
+package "Vulnerability Management Context" {
+  package "Domain Layer" {
+    class VulnerabilityAggregate extends AggregateRoot {
+      +static readonly AGGREGATE_NAME: string = 'Vulnerability'
+      +vulnerabilityId: VulnerabilityId
+      +systemId: SystemId
+      +cveId: string
+      +severity: VulnerabilitySeverity
+      +cvssScore: number
+      +detectVulnerability(cveId: string, severity: VulnerabilitySeverity): void
+    }
+
+    class VulnerabilityScanAggregate extends AggregateRoot {
+      +static readonly AGGREGATE_NAME: string = 'VulnerabilityScan'
+      +scanId: ScanId
+      +systemId: SystemId
+      +packages: SystemPackages
+      +scanType: ScanType
+      +priority: ScanPriority
+      +initiateScan(systemId: SystemId, packages: SystemPackages): void
+    }
+  }
+
+  package "Application Layer" {
+    class VulnerabilityScanService {
+      +eventPublisher: EventPublisher
+      +initiateScan(command: InitiateVulnerabilityScanCommand): Promise<void>
+    }
+
+    class VulnerabilityScanEventHandler implements EventHandler {
+      +vulnerabilityScanService: VulnerabilityScanService
+      +idempotentEventHandler: IdempotentEventHandler
+      +handle(event: SystemRegistered): Promise<void>
+    }
+  }
+
+  package "Infrastructure Layer" {
+    class VulnerabilityRepository {
+      +save(aggregate: VulnerabilityAggregate): Promise<void>
+      +findById(vulnId: VulnerabilityId): Promise<VulnerabilityAggregate>
+    }
+
+    class VulnerabilityScanRepository {
+      +save(aggregate: VulnerabilityScanAggregate): Promise<void>
+      +findById(scanId: ScanId): Promise<VulnerabilityScanAggregate>
+    }
+  }
+}
+
+package "Task Management Context" {
+  package "Domain Layer" {
+    class TaskAggregate extends AggregateRoot {
+      +static readonly AGGREGATE_NAME: string = 'Task'
+      +taskId: TaskId
+      +systemId: SystemId
+      +taskType: TaskType
+      +priority: TaskPriority
+      +deadline: Date
+      +createTask(command: CreateTaskCommand): void
+      +createRemediationTask(command: CreateRemediationTaskCommand): void
+    }
+  }
+
+  package "Application Layer" {
+    class TaskManagementService {
+      +eventPublisher: EventPublisher
+      +createTask(command: CreateTaskCommand): Promise<void>
+      +createRemediationTask(command: CreateRemediationTaskCommand): Promise<void>
+    }
+
+    class TaskEventHandler implements EventHandler {
+      +taskManagementService: TaskManagementService
+      +idempotentEventHandler: IdempotentEventHandler
+      +handle(event: VulnerabilityScanInitiated): Promise<void>
+    }
+
+    class VulnerabilityTaskEventHandler implements EventHandler {
+      +taskManagementService: TaskManagementService
+      +idempotentEventHandler: IdempotentEventHandler
+      +handle(event: VulnerabilityDetected): Promise<void>
+    }
+  }
+
+  package "Infrastructure Layer" {
+    class TaskRepository {
+      +save(aggregate: TaskAggregate): Promise<void>
+      +findById(taskId: TaskId): Promise<TaskAggregate>
+    }
+  }
+}
+
+package "Shared Application Layer" {
+  interface EventHandler<T extends DomainEvent> {
+    +handle(event: T): Promise<void>
+  }
+
+  interface EventPublisher {
+    +publish(event: DomainEvent): Promise<void>
+    +publishAll(events: DomainEvent[]): Promise<void>
+  }
+
+  interface EventSubscriber {
+    +subscribe(eventType: string, handler: EventHandler): void
+  }
+
+  interface ProcessedEventRepository {
+    +isProcessed(eventId: string): Promise<boolean>
+    +markAsProcessed(eventId: string, eventType: string, processedAt: Date): Promise<void>
+  }
+
+  class IdempotentEventHandler {
+    +processedEventRepository: ProcessedEventRepository
+    +handleWithIdempotency<T>(event: T, handler: Function): Promise<void>
+  }
+}
+
+package "Shared Infrastructure Layer" {
+  class KafkaEventPublisher implements EventPublisher {
+    +kafkaService: KafkaService
+    +publish(event: DomainEvent): Promise<void>
+    +publishAll(events: DomainEvent[]): Promise<void>
+    -determineTopicByEventType(eventType: string): string
+  }
+
+  class KurrentKafkaSubscriber implements EventSubscriber {
+    +kurrentClient: KurrentDBClient
+    +kafkaService: KafkaService
+    +subscribe(eventType: string, handler: EventHandler): void
+    -persistToEventStore(eventData: any, eventType: string): Promise<void>
+    -getStreamName(aggregateType: string, aggregateId: string): string
+  }
+
+  class PostgreSQLProcessedEventRepository implements ProcessedEventRepository {
+    +database: Database
+    +isProcessed(eventId: string): Promise<boolean>
+    +markAsProcessed(eventId: string, eventType: string, processedAt: Date): Promise<void>
+    -createTable(): Promise<void>
+  }
+}
+
+package "External Services" {
+  class KafkaService {
+    +send(message: any): Promise<void>
+    +subscribe(config: any): Promise<void>
+    +run(config: any): void
+  }
+
+  class KurrentDBClient {
+    +appendToStream(streamName: string, events: any[], options: any): Promise<void>
+  }
+}
+
+' Context Internal Relationships
+SystemService --> SystemAggregate : uses
+SystemService --> SystemRepository : uses
+VulnerabilityScanService --> VulnerabilityScanAggregate : uses
+VulnerabilityScanService --> VulnerabilityScanRepository : uses
+TaskManagementService --> TaskAggregate : uses
+TaskManagementService --> TaskRepository : uses
+
+' Cross-Context Event Handling
+VulnerabilityScanEventHandler --> VulnerabilityScanService : uses
+TaskEventHandler --> TaskManagementService : uses
+VulnerabilityTaskEventHandler --> TaskManagementService : uses
+SystemEventHandler --> SystemService : uses
+
+' Shared Dependencies
+SystemService --> EventPublisher : depends on
+VulnerabilityScanService --> EventPublisher : depends on
+TaskManagementService --> EventPublisher : depends on
+
+SystemEventHandler --> IdempotentEventHandler : uses
+VulnerabilityScanEventHandler --> IdempotentEventHandler : uses
+TaskEventHandler --> IdempotentEventHandler : uses
+VulnerabilityTaskEventHandler --> IdempotentEventHandler : uses
+
+' Infrastructure Dependencies
+KafkaEventPublisher --> KafkaService : uses
+KurrentKafkaSubscriber --> KurrentDBClient : uses
+KurrentKafkaSubscriber --> KafkaService : uses
+IdempotentEventHandler --> ProcessedEventRepository : depends on (interface)
+PostgreSQLProcessedEventRepository --> ProcessedEventRepository : implements
+
+@enduml
+```
+
+Infrastructure Dependencies
+
+```plantuml
+@startuml
+class KafkaEventPublisher
+class KafkaService
+class KurrentKafkaSubscriber
+class IdempotentEventHandler
+interface ProcessedEventRepository
+class PostgreSQLProcessedEventRepository
+
+KafkaEventPublisher --> KafkaService : uses
+KurrentKafkaSubscriber --> KurrentDBClient : uses
+KurrentKafkaSubscriber -> KafkaService : uses
+ProcessedEventRepository <|.. PostgreSQLProcessedEventRepository : implements
+IdempotentEventHandler -> ProcessedEventRepository : depends on (interface)
+@enduml
+```
+
+#### 3.0.2 ドメインイベント設計
+
+```plantuml
+@startuml domain_events_diagram
+!theme plain
+
+abstract class DomainEvent {
+  +eventId: string
+  +eventType: string
+  +aggregateId: string
+  +aggregateType: string
+  +aggregateVersion: number
+  +occurredOn: Date
+  +correlationId: string
+  +causationId?: string
+  +abstract getData(): any
+}
+
+package "System Management Events" {
+  class SystemRegistered extends DomainEvent {
+    +systemId: SystemId
+    +name: SystemName
+    +packages: SystemPackages
+    +securityClassification: SecurityClassification
+    +getData(): SystemRegisteredData
+  }
+
+  class SystemSecurityAlert extends DomainEvent {
+    +systemId: SystemId
+    +cveId: string
+    +alertLevel: AlertLevel
+    +triggeredBy: string
+    +getData(): SystemSecurityAlertData
+  }
+
+  class SystemConfigurationUpdated extends DomainEvent {
+    +systemId: SystemId
+    +updatedPackages: SystemPackages
+    +changeType: ConfigurationChangeType
+    +getData(): SystemConfigurationData
+  }
+
+  class SystemDecommissioned extends DomainEvent {
+    +systemId: SystemId
+    +decommissionReason: string
+    +finalState: SystemState
+    +getData(): SystemDecommissionData
+  }
+}
+
+package "Vulnerability Management Events" {
+  class VulnerabilityDetected extends DomainEvent {
+    +vulnerabilityId: VulnerabilityId
+    +systemId: SystemId
+    +cveId: string
+    +severity: VulnerabilitySeverity
+    +cvssScore: number
+    +affectedPackages: Package[]
+    +getData(): VulnerabilityDetectedData
+  }
+
+  class VulnerabilityScanInitiated extends DomainEvent {
+    +scanId: ScanId
+    +systemId: SystemId
+    +packages: SystemPackages
+    +scanType: ScanType
+    +priority: ScanPriority
+    +estimatedCompletion: Date
+    +getData(): VulnerabilityScanInitiatedData
+  }
+
+  class VulnerabilityScanCompleted extends DomainEvent {
+    +scanId: ScanId
+    +systemId: SystemId
+    +totalVulnerabilities: number
+    +criticalCount: number
+    +highCount: number
+    +mediumCount: number
+    +lowCount: number
+    +getData(): VulnScanCompletedData
+  }
+
+  class VulnerabilityResolved extends DomainEvent {
+    +vulnerabilityId: VulnerabilityId
+    +systemId: SystemId
+    +resolutionMethod: ResolutionMethod
+    +resolvedBy: string
+    +getData(): VulnerabilityResolvedData
+  }
+}
+
+package "Task Management Events" {
+  class TaskCreated extends DomainEvent {
+    +taskId: TaskId
+    +systemId: SystemId
+    +taskType: TaskType
+    +priority: TaskPriority
+    +deadline: Date
+    +assignee?: string
+    +description: string
+    +getData(): TaskCreatedData
+  }
+
+  class HighPriorityTask extends DomainEvent {
+    +taskId: TaskId
+    +vulnerabilityId: VulnerabilityId
+    +systemId: SystemId
+    +priority: TaskPriority
+    +urgencyLevel: UrgencyLevel
+    +escalationPath: string[]
+    +deadline: Date
+    +getData(): HighPriorityTaskData
+  }
+
+  class TaskCompleted extends DomainEvent {
+    +taskId: TaskId
+    +systemId: SystemId
+    +completedBy: string
+    +completionNotes: string
+    +actualEffort: Duration
+    +getData(): TaskCompletedData
+  }
+
+  class TaskEscalated extends DomainEvent {
+    +taskId: TaskId
+    +escalatedTo: string
+    +escalationReason: string
+    +originalAssignee: string
+    +escalationLevel: number
+    +getData(): TaskEscalatedData
+  }
+}
+
+package "Cross-Context Events" {
+  note as N1
+    これらのイベントは複数の
+    コンテキストにまたがって
+    処理される
+  end note
+
+  SystemRegistered .. N1
+  VulnerabilityDetected .. N1
+  VulnerabilityScanInitiated .. N1
+  HighPriorityTask .. N1
+}
+
+@enduml
+```
+
+#### 3.0.3 イベントフロー図
+
+```plantuml
+@startuml event_flow_diagram
+!theme plain
+
+start
+
+:システム登録要求;
+
+:SystemRegistered イベント生成;
+
+fork
+  :Kafka配信;
+  :Kurrent DB永続化;
+fork again
+  :脆弱性管理コンテキスト;
+  :VulnerabilityScanInitiated イベント生成;
+
+  fork
+    :Kafka配信;
+    :Kurrent DB永続化;
+  fork again
+    :タスク管理コンテキスト;
+    :TaskCreated イベント生成;
+
+    :タスク実行;
+
+    :TaskCompleted イベント生成;
+  end fork
+
+  :脆弱性スキャン実行;
+
+  if (脆弱性発見?) then (yes)
+    :VulnerabilityDetected イベント生成;
+
+    fork
+      :Kafka配信;
+      :Kurrent DB永続化;
+    fork again
+      if (CVSS >= 9.0?) then (Critical)
+        :タスク管理コンテキスト;
+        :HighPriorityTask イベント生成;
+
+        fork
+          :Kafka配信;
+          :Kurrent DB永続化;
+        fork again
+          :緊急対応タスク作成;
+        end fork
+      else (Standard)
+        :通常処理;
+      endif
+    fork again
+      if (CVSS >= 9.0?) then (Critical)
+        :システム管理コンテキスト;
+        :SystemSecurityAlert イベント生成;
+
+        fork
+          :Kafka配信;
+          :Kurrent DB永続化;
+        fork again
+          :セキュリティアラート発信;
+        end fork
+      else (Standard)
+        :通常処理;
+      endif
+    end fork
+  else (no)
+    :スキャン完了;
+  endif
+end fork
+
+:最終的整合性の達成;
+
+stop
+
+note right
+  **イベント連鎖パターン**
+
+  1. システム登録 → スキャン開始
+  2. スキャン開始 → タスク作成
+  3. 脆弱性発見 → 緊急タスク + アラート
+  4. 各イベントは独立して処理
+  5. 最終的整合性で全体調整
+end note
+
+@enduml
+```
 
 ### 3.1 システム登録時の脆弱性スキャン開始
 
@@ -96,13 +629,13 @@ end box
 box "Event Infrastructure" #lightgray
     participant "Kafka" as Kafka
     participant "EventStore Subscriber" as ESub
-    participant "EventStore DB" as ES
+    participant "Kurrent DB" as ES
 end box
 
 box "Vulnerability Management Context" #lightgreen
     participant "VulnScan EventHandler" as VEH
     participant "VulnScan Aggregate" as VSA
-    participant "VulnScanInitiated Event" as VSIE
+    participant "VulnerabilityScanInitiated Event" as VSIE
 end box
 
 box "Task Management Context" #lightyellow
@@ -124,14 +657,14 @@ note right: Asynchronous persistence
 
 Kafka ->> VEH: SystemRegistered
 VEH -> VSA: initiateScan(systemId, packages)
-VSA -> VSIE: Generate VulnScanInitiated
-VSIE -> Kafka: Publish VulnScanInitiated
+VSA -> VSIE: Generate VulnerabilityScanInitiated
+VSIE -> Kafka: Publish VulnerabilityScanInitiated
 note right: Kafka first
 
-Kafka ->> ESub: VulnScanInitiated
+Kafka ->> ESub: VulnerabilityScanInitiated
 ESub -> ES: Store event
 
-Kafka ->> TEH: VulnScanInitiated
+Kafka ->> TEH: VulnerabilityScanInitiated
 TEH -> TA: createTask(scanTask)
 TA -> TCE: Generate TaskCreated
 TCE -> Kafka: Publish TaskCreated
@@ -155,7 +688,7 @@ end box
 box "Event Infrastructure" #lightgray
     participant "Kafka" as Kafka
     participant "EventStore Subscriber" as ESub
-    participant "EventStore DB" as ES
+    participant "Kurrent DB" as ES
 end box
 
 box "Task Management Context" #lightyellow
@@ -200,21 +733,21 @@ note over VA,SA: Critical vulnerabilities trigger\ncascading domain events
 @enduml
 ```
 
-## 4. EventStore実装詳細
+## 4. Kurrent DB実装詳細
 
 ### 4.1 イベントストリーム構造
 
 ```typescript
 // イベントストリーム命名規則
 const STREAM_PATTERNS = {
-  SYSTEM: 'system-{systemId}',           // システム集約用
-  VULNERABILITY: 'vuln-{vulnId}',        // 脆弱性集約用
-  TASK: 'task-{taskId}',                 // タスク集約用
-  RELATIONSHIP: 'relation-{relationId}'   // 関係集約用
+  SYSTEM: 'System-{systemId}',           // システム集約用
+  VULNERABILITY: 'Vulnerability-{vulnId}',        // 脆弱性集約用
+  TASK: 'Task-{taskId}',                 // タスク集約用
+  RELATIONSHIP: 'Relationship-{relationId}'   // 関係集約用
 };
 
 // パーティション戦略
-interface EventStoreConfig {
+interface KurrentConfig {
   partitionStrategy: 'by-aggregate-id';
   snapshotFrequency: 100; // 100イベント毎
   retentionPolicy: '7-years'; // コンプライアンス要件
@@ -252,7 +785,7 @@ export abstract class DomainEvent {
     this.causationId = causationId;
   }
 
-  abstract getData(): any;
+  abstract getData(): unknown;
 }
 ```
 
@@ -261,6 +794,9 @@ export abstract class DomainEvent {
 ```typescript
 // System Management Context Event
 export class SystemRegistered extends DomainEvent {
+  static readonly EVENT_NAME = 'SystemRegistered';
+  static readonly AGGREGATE_NAME = 'System';
+
   constructor(
     public readonly systemId: SystemId,
     public readonly name: SystemName,
@@ -270,9 +806,9 @@ export class SystemRegistered extends DomainEvent {
     correlationId: string
   ) {
     super(
-      'SystemRegistered',
+      SystemRegistered.EVENT_NAME,
       systemId.getValue(),
-      'System',
+      SystemRegistered.AGGREGATE_NAME,
       aggregateVersion,
       correlationId
     );
@@ -293,6 +829,9 @@ export class SystemRegistered extends DomainEvent {
 
 // Vulnerability Management Context Event
 export class VulnerabilityDetected extends DomainEvent {
+  static readonly EVENT_NAME = 'VulnerabilityDetected';
+  static readonly AGGREGATE_NAME = 'Vulnerability';
+
   constructor(
     public readonly vulnerabilityId: VulnerabilityId,
     public readonly systemId: SystemId,
@@ -304,9 +843,9 @@ export class VulnerabilityDetected extends DomainEvent {
     causationId?: string
   ) {
     super(
-      'VulnerabilityDetected',
+      VulnerabilityDetected.EVENT_NAME,
       vulnerabilityId.getValue(),
-      'Vulnerability',
+      VulnerabilityDetected.AGGREGATE_NAME,
       aggregateVersion,
       correlationId,
       causationId
@@ -327,6 +866,9 @@ export class VulnerabilityDetected extends DomainEvent {
 
 // Task Management Context Event
 export class TaskCreated extends DomainEvent {
+  static readonly EVENT_NAME = 'TaskCreated';
+  static readonly AGGREGATE_NAME = 'Task';
+
   constructor(
     public readonly taskId: TaskId,
     public readonly systemId: SystemId,
@@ -338,9 +880,9 @@ export class TaskCreated extends DomainEvent {
     causationId?: string
   ) {
     super(
-      'TaskCreated',
+      TaskCreated.EVENT_NAME,
       taskId.getValue(),
-      'Task',
+      TaskCreated.AGGREGATE_NAME,
       aggregateVersion,
       correlationId,
       causationId
@@ -359,21 +901,21 @@ export class TaskCreated extends DomainEvent {
 }
 ```
 
-## 5. Kafka-EventStore統合実装
+## 5. Kafka-Kurrent DB統合実装
 
-### 5.1 Kafkaメッセージ受信→EventStore保存パターン
+### 5.1 Kafkaメッセージ受信→Kurrent DB保存パターン
 
 ```typescript
 @Injectable()
-export class EventStoreKafkaSubscriber implements OnModuleInit {
+export class KurrentKafkaSubscriber implements OnModuleInit {
   constructor(
-    private readonly eventStoreClient: EventStoreDBClient,
+    private readonly kurrentClient: KurrentDBClient,
     private readonly kafkaService: KafkaService,
     private readonly logger: Logger
   ) {}
 
   async onModuleInit(): Promise<void> {
-    // Kafkaからイベントを受信してEventStoreに保存
+    // Kafkaからイベントを受信してKurrent DBに保存
     await this.subscribeToKafkaEvents();
   }
 
@@ -395,16 +937,16 @@ export class EventStoreKafkaSubscriber implements OnModuleInit {
       const eventData = JSON.parse(message.value.toString());
       const eventType = message.headers['event-type'].toString();
 
-      // EventStoreに永続化
+      // Kurrent DBに永続化
       await this.persistToEventStore(eventData, eventType);
 
-      this.logger.debug('Event persisted to EventStore from Kafka', {
+      this.logger.debug('Event persisted to Kurrent DB from Kafka', {
         eventType,
         eventId: eventData.eventId,
         topic
       });
     } catch (error) {
-      this.logger.error('Failed to persist event to EventStore', {
+      this.logger.error('Failed to persist event to Kurrent DB', {
         topic,
         error: error.message
       });
@@ -426,19 +968,13 @@ export class EventStoreKafkaSubscriber implements OnModuleInit {
       }
     };
 
-    await this.eventStoreClient.appendToStream(streamName, [eventToStore], {
+    await this.kurrentClient.appendToStream(streamName, [eventToStore], {
       expectedRevision: 'any'
     });
   }
 
   private getStreamName(aggregateType: string, aggregateId: string): string {
-    const streamMap = {
-      'System': `system-${aggregateId}`,
-      'Vulnerability': `vuln-${aggregateId}`,
-      'Task': `task-${aggregateId}`,
-      'Relationship': `relation-${aggregateId}`
-    };
-    return streamMap[aggregateType] || `unknown-${aggregateId}`;
+    return `${aggregateType}-${aggregateId}`;
   }
 }
 ```
@@ -498,18 +1034,18 @@ export class KafkaFirstEventPublisher implements DomainEventPublisher {
     // イベントタイプごとのトピック振り分け
     const topicMap = {
       // System Management Context
-      'SystemRegistered': 'system-events',
+      [SystemRegistered.EVENT_NAME]: 'system-events',
       'SystemConfigurationUpdated': 'system-events',
       'SystemDecommissioned': 'system-events',
       'SystemSecurityAlert': 'security-events',
 
       // Vulnerability Management Context
-      'VulnerabilityDetected': 'vulnerability-events',
+      [VulnerabilityDetected.EVENT_NAME]: 'vulnerability-events',
       'VulnerabilityScanCompleted': 'vulnerability-events',
       'VulnerabilityResolved': 'vulnerability-events',
 
       // Task Management Context
-      'TaskCreated': 'task-events',
+      [TaskCreated.EVENT_NAME]: 'task-events',
       'TaskCompleted': 'task-events',
       'HighPriorityTaskCreated': 'urgent-events'
     };
@@ -585,12 +1121,12 @@ export class VulnerabilitySystemRegisteredHandler
 
   constructor(
     private readonly vulnerabilityScanService: VulnerabilityScanService,
-    private readonly idempotentHandler: IdempotentEventHandler,
+    private readonly idempotentEventHandler: IdempotentEventHandler,
     private readonly logger: Logger
   ) {}
 
   async handle(event: SystemRegistered): Promise<void> {
-    await this.idempotentHandler.handleWithIdempotency(
+    await this.idempotentEventHandler.handleWithIdempotency(
       event,
       async (e) => {
         // 新規システム登録時に脆弱性スキャンを自動開始
@@ -632,12 +1168,12 @@ export class TaskVulnerabilityDetectedHandler
 
   constructor(
     private readonly taskManagementService: TaskManagementService,
-    private readonly idempotentHandler: IdempotentEventHandler,
+    private readonly idempotentEventHandler: IdempotentEventHandler,
     private readonly logger: Logger
   ) {}
 
   async handle(event: VulnerabilityDetected): Promise<void> {
-    await this.idempotentHandler.handleWithIdempotency(
+    await this.idempotentEventHandler.handleWithIdempotency(
       event,
       async (e) => {
         const eventData = e.getData();
@@ -691,9 +1227,9 @@ export class TaskVulnerabilityDetectedHandler
 ### 7.1 ダブルコミット回避のイベント保存タイミング
 
 - **Kafkaファースト**: ドメインイベントはコマンド処理完了と同時にKafkaに配信
-- **EventStore非同期永続化**: Kafkaメッセージ受信後にEventStoreへ保存
+- **Kurrent DB非同期永続化**: Kafkaメッセージ受信後にKurrent DBへ保存
 - **単一トランザクション境界**: Kafkaへの配信成功のみでコマンド処理完了
-- **最終的整合性**: コンテキスト間とEventStoreへの永続化は最終的整合性を受け入れ
+- **最終的整合性**: コンテキスト間とKurrent DBへの永続化は最終的整合性を受け入れ
 
 ### 7.2 エラー処理戦略
 
@@ -704,7 +1240,7 @@ export class TaskVulnerabilityDetectedHandler
 ### 7.3 パフォーマンス考慮事項
 
 - **スナップショット**: 100イベント毎の集約スナップショット
-- **インデックス最適化**: EventStore検索性能向上
+- **インデックス最適化**: Kurrent DB検索性能向上
 - **パーティション戦略**: 集約ID単位でのイベント分散
 
 この設計により、System Boardの各コンテキストは疎結合を保ちながら、ダブルコミット問題を回避してドメインイベントを通じて効率的にコラボレーションできる。
@@ -713,5 +1249,5 @@ export class TaskVulnerabilityDetectedHandler
 
 - **トランザクション境界の単純化**: Kafkaへの配信成功のみでコマンド完了
 - **障害時の一貫性保証**: Kafka配信失敗時はコマンド自体が失敗
-- **EventStore復旧可能性**: KafkaメッセージからいつでもEventStoreを再構築可能
+- **Kurrent DB復旧可能性**: KafkaメッセージからいつでもKurrent DBを再構築可能
 - **パフォーマンス向上**: 2フェーズコミット不要でレスポンス時間短縮

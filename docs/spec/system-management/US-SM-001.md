@@ -889,36 +889,167 @@ export class RegisterSystemCommand {
 
 ### 3.2 コマンドハンドラー
 
-**セキュリティ統合アプローチ**:
+**アスペクト指向プログラミング（AOP）によるセキュリティ統合**:
 
-- **認可チェック**: コマンド実行前の事前認可とドメインオブジェクト生成後の事後認可
-- **監査ログ**: 全セキュリティイベントの完全な証跡記録
-- **PIIマスキング**: ログとエラーメッセージでの自動PII保護
+横断的関心事（認可、監査、PII保護）をアスペクトとして自動織り込みすることで、コードの重複を排除し記述漏れを防止する。
 
-**分散トレーシング統合**:
-
-- OpenTelemetry スパン生成
-- 処理時間・エラー率のメトリクス収集
-- GlitchTip エラートラッキング連携
-
-**イベントソーシングアプローチ**:
-
-- コマンドハンドラーはEventStoreに直接永続化
-- EventStore Subscriptionが自動的にKafkaに配信
-- 他コンテキストはKafkaからイベントを受信
+**セキュリティアスペクト設計**:
 
 ```typescript
-@CommandHandler(RegisterSystemCommand)
-export class RegisterSystemHandler {
+// セキュリティアスペクトの実装
+@Injectable()
+export class SecurityAspect {
   constructor(
     private readonly authorizationService: SystemAuthorizationService,
-    private readonly systemUniquenessService: SystemUniquenessService,
-    private readonly eventStore: EventStore,
     private readonly auditLogger: SecurityAuditLogger,
     private readonly piiProtectionService: PIIProtectionService
   ) {}
 
+  async beforeExecution<T extends SecureCommand>(
+    command: T,
+    context: ExecutionContext
+  ): Promise<void> {
+    // 1. 認可チェック
+    const authResult = await this.authorizationService.authorizeCommand(
+      command.getSecurityMetadata()
+    );
+
+    if (!authResult.isAuthorized()) {
+      await this.auditLogger.logUnauthorizedAccess({
+        command: context.getClass().name,
+        method: context.getHandler().name,
+        reason: authResult.getReason(),
+        userContext: command.userContext,
+        securityClassification: command.securityClassification
+      });
+      throw new UnauthorizedAccessError(authResult.getReason());
+    }
+  }
+
+  async afterExecution<T extends SecureCommand>(
+    command: T,
+    result: any,
+    context: ExecutionContext
+  ): Promise<void> {
+    // 2. 成功監査ログ（PII保護済み）
+    const maskedResult = await this.piiProtectionService.maskForLogging(result);
+
+    await this.auditLogger.logAuthorizedOperation({
+      command: context.getClass().name,
+      method: context.getHandler().name,
+      result: maskedResult,
+      userContext: command.userContext,
+      timestamp: new Date()
+    });
+  }
+
+  async onError<T extends SecureCommand>(
+    command: T,
+    error: Error,
+    context: ExecutionContext
+  ): Promise<void> {
+    // 3. エラー監査ログ（PII保護済み）
+    const maskedError = await this.piiProtectionService.maskErrorForLogging(error);
+
+    await this.auditLogger.logOperationFailure({
+      command: context.getClass().name,
+      method: context.getHandler().name,
+      error: maskedError,
+      userContext: command.userContext,
+      timestamp: new Date()
+    });
+  }
+}
+```
+
+**インターセプターによる自動セキュリティ適用**:
+
+```typescript
+@Injectable()
+export class SecurityInterceptor implements NestInterceptor {
+  constructor(
+    private readonly securityAspect: SecurityAspect,
+    private readonly reflector: Reflector
+  ) {}
+
+  async intercept(
+    context: ExecutionContext,
+    next: CallHandler
+  ): Promise<Observable<any>> {
+    const securityMetadata = this.reflector.get<SecurityMetadata>(
+      'security',
+      context.getHandler()
+    );
+
+    if (!securityMetadata) {
+      return next.handle();
+    }
+
+    const request = context.switchToHttp().getRequest();
+    const command = request.body;
+
+    try {
+      // Before execution - 認可チェック
+      await this.securityAspect.beforeExecution(command, context);
+
+      return next.handle().pipe(
+        tap(async (result) => {
+          // After successful execution - 成功監査ログ
+          await this.securityAspect.afterExecution(command, result, context);
+        }),
+        catchError(async (error) => {
+          // Error handling - エラー監査ログ
+          await this.securityAspect.onError(command, error, context);
+          throw error;
+        })
+      );
+    } catch (error) {
+      await this.securityAspect.onError(command, error, context);
+      throw error;
+    }
+  }
+}
+```
+
+**デコレーターベースのセキュリティ宣言**:
+
+```typescript
+// セキュリティメタデータデコレーター
+export function SecureCommand(
+  minimumClassification: SecurityClassification = SecurityClassification.INTERNAL,
+  minimumRole: UserRole = UserRole.OPERATOR,
+  auditLevel: AuditLevel = AuditLevel.STANDARD
+) {
+  return SetMetadata('security', {
+    minimumClassification,
+    minimumRole,
+    auditLevel,
+    requiresAuthorization: true
+  });
+}
+
+// セキュアコマンド共通インターフェース
+interface SecureCommand {
+  userContext: UserContext;
+  securityClassification: SecurityClassification;
+  getSecurityMetadata(): SecurityCommandMetadata;
+}
+```
+
+**簡素化されたコマンドハンドラー実装**:
+
+```typescript
+@CommandHandler(RegisterSystemCommand)
+@SecureCommand(SecurityClassification.INTERNAL, UserRole.OPERATOR)
+export class RegisterSystemHandler {
+  constructor(
+    private readonly systemUniquenessService: SystemUniquenessService,
+    private readonly eventStore: EventStore
+  ) {}
+
   async execute(command: RegisterSystemCommand): Promise<SystemId> {
+    // セキュリティ処理（認可、監査、PII保護）は自動的に織り込まれる
+
     // 1. ドメインモデル生成（ドメインイベントが内部で生成される）
     const system = System.register(command);
 
@@ -944,6 +1075,55 @@ export class RegisterSystemHandler {
 }
 ```
 
+**AOP適用の利点**:
+
+1. **DRY原則**: セキュリティロジックの重複排除
+2. **関心事の分離**: ビジネスロジックとセキュリティの明確な分離
+3. **記述漏れ防止**: デコレーター適用により自動的な横断的関心事の適用
+4. **保守性向上**: セキュリティポリシー変更時の一元管理
+5. **テスタビリティ**: ビジネスロジックの単体テスト簡素化
+6. **可読性向上**: コマンドハンドラーの意図が明確化
+
+**モジュール設定**:
+
+```typescript
+@Module({
+  providers: [
+    SecurityAspect,
+    SystemAuthorizationService,
+    SecurityAuditLogger,
+    PIIProtectionService,
+    {
+      provide: APP_INTERCEPTOR,
+      useClass: SecurityInterceptor,
+    },
+  ],
+})
+export class SecurityModule {}
+```
+
+**パフォーマンス最適化**:
+
+```typescript
+// 認可結果キャッシュ
+@Injectable()
+export class CachedAuthorizationService extends SystemAuthorizationService {
+  @Cacheable('authorization', 300) // 5分キャッシュ
+  async authorizeCommand(metadata: SecurityCommandMetadata): Promise<AuthorizationResult> {
+    return super.authorizeCommand(metadata);
+  }
+}
+
+// 条件付きセキュリティ適用
+@SecureCommand({
+  condition: (command) => command.securityClassification !== SecurityClassification.PUBLIC,
+  minimumRole: UserRole.OPERATOR
+})
+export class ConditionalSecurityHandler {
+  // パブリック操作は認可スキップ
+}
+```
+
 ### 3.3 バリデーションルール
 
 **セキュリティバリデーション**:
@@ -960,58 +1140,109 @@ export class RegisterSystemHandler {
 - **セキュリティ分類**: PUBLIC, INTERNAL, CONFIDENTIAL, RESTRICTED から選択
 - **認可権限**: ユーザーロールとセキュリティ分類の適合性
 
-### 3.4 セキュリティ統合コンポーネント
+### 3.4 セキュリティサービス詳細実装
 
-**層別セキュリティコンポーネント**:
+**アプリケーション層: セキュリティサービス**:
 
 ```typescript
-// アプリケーション層: セキュリティサービス
+// 認可サービス（AOPアスペクトから呼び出される）
 @Injectable()
 export class SystemAuthorizationService {
+  constructor(
+    private readonly authorizationMatrix: AuthorizationMatrix,
+    private readonly rolePermissionService: RolePermissionService
+  ) {}
+
   async authorizeCommand(metadata: SecurityCommandMetadata): Promise<AuthorizationResult> {
     // セキュリティ分類に基づく認可チェック
     const userRole = metadata.userRole;
     const targetClassification = metadata.targetClassification;
     const requiredAction = metadata.requiredAction;
 
-    return this.authorizationMatrix.check(userRole, targetClassification, requiredAction);
-  }
-}
+    // 権限マトリックスによる認可判定
+    const hasPermission = await this.authorizationMatrix.check(
+      userRole,
+      targetClassification,
+      requiredAction
+    );
 
-@Injectable()
-export class PIIProtectionService {
-  async maskEventsForLogging(events: DomainEvent[]): Promise<DomainEvent[]> {
-    // PII自動検出とマスキング
-    return events.map(event => {
-      const maskedPayload = this.piiDetector.maskSensitiveData(event.payload);
-      return { ...event, payload: maskedPayload };
+    return new AuthorizationResult({
+      isAuthorized: hasPermission,
+      reason: hasPermission ? 'Authorized' : `Insufficient permissions for ${requiredAction} on ${targetClassification}`,
+      grantedPermissions: await this.rolePermissionService.getPermissions(userRole),
+      timestamp: new Date()
     });
   }
 
+  async authorizeFieldAccess(
+    userRole: UserRole,
+    targetClassification: SecurityClassification,
+    fieldLevel: SecurityLevel
+  ): Promise<boolean> {
+    // フィールドレベルの認可チェック
+    return this.authorizationMatrix.checkFieldAccess(userRole, targetClassification, fieldLevel);
+  }
+}
+
+// PII保護サービス（AOPアスペクトから呼び出される）
+@Injectable()
+export class PIIProtectionService {
+  constructor(
+    private readonly piiDetector: PIIDetector,
+    private readonly encryptionService: EncryptionService
+  ) {}
+
+  async maskEventsForLogging(events: DomainEvent[]): Promise<DomainEvent[]> {
+    // PII自動検出とマスキング
+    return Promise.all(events.map(async event => {
+      const maskedPayload = await this.piiDetector.maskSensitiveData(event.getData());
+      return {
+        ...event,
+        maskedData: maskedPayload,
+        originalDataHash: await this.encryptionService.hash(JSON.stringify(event.getData()))
+      };
+    }));
+  }
+
+  async maskForLogging(data: any): Promise<any> {
+    // 汎用データマスキング
+    return this.piiDetector.maskSensitiveData(data);
+  }
+
   async maskErrorForLogging(error: Error): Promise<any> {
-    // エラーメッセージからPIIを自動マスキング
+    // エラーメッセージからPII自動マスキング
     return {
-      message: this.piiDetector.maskSensitiveData(error.message),
-      stack: this.piiDetector.maskSensitiveData(error.stack),
-      timestamp: new Date().toISOString()
+      message: await this.piiDetector.maskSensitiveData(error.message),
+      stack: await this.piiDetector.maskSensitiveData(error.stack || ''),
+      timestamp: new Date().toISOString(),
+      errorType: error.constructor.name
     };
   }
 }
 
+// 監査ログサービス（AOPアスペクトから呼び出される）
 @Injectable()
 export class SecurityAuditLogger {
-  async logAuthorizedSystemCreation(audit: SystemCreationAudit): Promise<void> {
-    // ISO 27001, NIST Framework準拠の監査ログ
+  constructor(
+    private readonly auditStorage: AuditStorage,
+    private readonly complianceReporter: ComplianceReporter,
+    private readonly securityIncidentManager: SecurityIncidentManager
+  ) {}
+
+  async logAuthorizedOperation(audit: OperationAudit): Promise<void> {
+    // 認可された操作の監査ログ
     const auditEntry = {
-      eventType: 'SYSTEM_CREATION_AUTHORIZED',
+      eventType: 'OPERATION_AUTHORIZED',
       timestamp: new Date().toISOString(),
-      systemId: audit.systemId,
-      securityClassification: audit.securityClassification,
+      command: audit.command,
+      method: audit.method,
+      result: audit.result,
       userId: audit.userContext.userId,
       userRole: audit.userContext.role,
       sourceIp: audit.userContext.sourceIp,
-      additionalActions: audit.additionalActions,
-      complianceFrameworks: ['ISO27001', 'NIST_CSF']
+      sessionId: audit.userContext.sessionId,
+      complianceFrameworks: ['ISO27001', 'NIST_CSF'],
+      auditLevel: 'STANDARD'
     };
 
     await this.auditStorage.store(auditEntry);
@@ -1024,17 +1255,75 @@ export class SecurityAuditLogger {
       eventType: 'UNAUTHORIZED_ACCESS_ATTEMPT',
       timestamp: new Date().toISOString(),
       command: violation.command,
+      method: violation.method,
       reason: violation.reason,
       userId: violation.userContext.userId,
       userRole: violation.userContext.role,
       sourceIp: violation.userContext.sourceIp,
+      sessionId: violation.userContext.sessionId,
       securityClassification: violation.securityClassification,
       severity: 'HIGH',
-      complianceFrameworks: ['ISO27001', 'NIST_CSF']
+      complianceFrameworks: ['ISO27001', 'NIST_CSF'],
+      auditLevel: 'CRITICAL'
     };
 
     await this.auditStorage.store(violationEntry);
     await this.securityIncidentManager.escalate(violationEntry);
+  }
+
+  async logOperationFailure(failure: OperationFailure): Promise<void> {
+    // 操作失敗の監査ログ
+    const failureEntry = {
+      eventType: 'OPERATION_FAILURE',
+      timestamp: new Date().toISOString(),
+      command: failure.command,
+      method: failure.method,
+      error: failure.error,
+      userId: failure.userContext.userId,
+      userRole: failure.userContext.role,
+      sourceIp: failure.userContext.sourceIp,
+      sessionId: failure.userContext.sessionId,
+      complianceFrameworks: ['ISO27001', 'NIST_CSF'],
+      auditLevel: 'WARNING'
+    };
+
+    await this.auditStorage.store(failureEntry);
+  }
+}
+
+// 監査データ型定義
+export interface OperationAudit {
+  command: string;
+  method: string;
+  result: any;
+  userContext: UserContext;
+}
+
+export interface SecurityViolation {
+  command: string;
+  method: string;
+  reason: string;
+  userContext: UserContext;
+  securityClassification: SecurityClassification;
+}
+
+export interface OperationFailure {
+  command: string;
+  method: string;
+  error: any;
+  userContext: UserContext;
+}
+
+export class AuthorizationResult {
+  constructor(
+    public readonly isAuthorized: boolean,
+    public readonly reason: string,
+    public readonly grantedPermissions: Permission[],
+    public readonly timestamp: Date
+  ) {}
+
+  getReason(): string {
+    return this.reason;
   }
 }
 ```
