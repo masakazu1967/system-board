@@ -52,6 +52,14 @@ pnpm operating-system start:dev
 - セキュリティエンジニア
 - DevOpsエンジニア
 
+## アーキテクチャ
+
+- ドメイン駆動設計
+- イベントソーシング
+- CQRS
+- イベントストーミングドキュメント類
+  - @docs/event-storming
+
 ## 重要事項
 
 - 全ての pnpm コマンドはプロジェクトルートから実行する
