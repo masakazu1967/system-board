@@ -1684,19 +1684,299 @@ export class SystemRegisteredEventHandler implements EventHandler<SystemRegister
 **アプリケーションサービス**: ユースケースオーケストレーション（アプリケーション層）
 **依存関係の方向**: インフラストラクチャ → アプリケーション → ドメイン
 
-### 5.1 SystemExistenceService
+### 5.1 SystemDuplicationService（結果整合性対応の重複チェック戦略）
 
 **分散システム考慮事項**:
 
-- 分散ロック機構による同時実行制御
-- 最終的整合性の受け入れ
-- 補償処理（Saga パターン）
+- CQRS + イベントソーシングによる結果整合性の受け入れ
+- リードモデル反映前のイベントキャッシュによる高速チェック
+- 二段階チェック戦略（リードモデル + 進行中コマンド追跡）
 
 **ドメイン知識カプセル化**:
 
 - システム全体を引数として受け取り、内部でユニーク性判定ロジックを実装
 - ドメイン知識（何をもってユニークとするか）をドメイン層に保持
 - 真偽値を返してアプリケーション層で判定処理を実装
+
+**結果整合性対応の二段階チェック戦略**:
+
+イベントソーシング + CQRSの結果整合性により、リードモデル反映前の重複チェックが課題となる。
+この戦略では、リードモデルと名前変更中のキャッシュによる高速チェックを組み合わせる。
+
+**チェックフロー**:
+
+1. リードモデルのシステムリポジトリから対象ID以外の指定名前のシステムを取得
+2. リードモデルに反映前のイベントの指定名前のキャッシュを取得
+3. 指定名前のキャッシュがない場合:
+   - 指定名前のリードモデルがない場合 → 重複なし
+   - 指定名前のリードモデルがある場合:
+     - IDが等しくない場合 → 重複あり
+     - IDが等しい場合 → 重複なし（自己参照）
+4. 対象ID以外の指定名前のキャッシュがある場合:
+   - イベントストアから集約を復元
+   - 復元した集約の名前が指定名前の場合 → 重複あり
+   - 復元した集約の名前が指定名前ではない場合:
+     - 指定名前のリードモデルがある場合 → 重複あり
+     - 指定名前のリードモデルがない場合 → 重複なし
+
+```typescript
+/**
+ * SystemDuplicationService - 結果整合性対応の重複チェックサービス
+ *
+ * イベントソーシング + CQRS環境における重複チェック戦略:
+ * 1. リードモデルでのクイックチェック（反映済みデータ）
+ * 2. Redisキャッシュでの進行中コマンドチェック（反映前データ）
+ */
+@Injectable()
+export class SystemDuplicationService {
+  constructor(
+    private readonly systemRepository: SystemRepository, // リードモデルリポジトリ
+    private readonly eventStore: EventStore,              // イベントストア（集約復元用）
+    private readonly cacheManager: Cache                  // Redisキャッシュ
+  ) {}
+
+  /**
+   * システム名の重複チェック
+   * @param system チェック対象のシステム集約
+   * @returns 重複している場合true、重複していない場合false
+   */
+  async isDuplicate(system: System): Promise<boolean> {
+    const id = system.getIdValue();
+    const name = system.getName();
+
+    // 1. リードモデルから対象ID以外の指定名前のシステムを取得
+    const existingSystem = await this.systemRepository.findByName(name);
+
+    // 2. リードモデル反映前のイベントの指定名前のキャッシュを取得
+    // キャッシュ値: 指定名前を持つシステムIDのリスト
+    const pendingSystemIds = await this.cacheManager.get<string[]>(`pending_name:${name.value}`) || [];
+
+    // 対象ID以外の指定名前を持つ進行中のシステムIDをフィルタリング
+    const otherPendingSystemIds = pendingSystemIds.filter(cachedId => cachedId !== id);
+
+    // 3. 指定名前のキャッシュがない場合
+    if (otherPendingSystemIds.length === 0) {
+      // 3.1 指定名前のリードモデルがない場合 → 重複なし
+      if (existingSystem == null) {
+        return false;
+      }
+
+      // 3.2 指定名前のリードモデルがある場合
+      // 3.2.1 IDが等しくない場合 → 重複あり
+      if (existingSystem.getIdValue() !== id) {
+        return true;
+      }
+
+      // 3.2.2 IDが等しい場合（自己参照） → 重複なし
+      return false;
+    }
+
+    // 4. 対象ID以外の指定名前のキャッシュがある場合
+    // 4.1 イベントストアから集約を復元
+    const otherSystemId = otherPendingSystemIds[0]; // 最初の1件をチェック
+    const reconstitutedSystem = await this.reconstructSystemFromEventStore(otherSystemId);
+
+    // 4.2 復元した集約の名前が指定名前の場合 → 重複あり
+    if (reconstitutedSystem.getName().equals(name)) {
+      return true;
+    }
+
+    // 4.3 復元した集約の名前が指定名前ではない場合
+    //     （名前変更処理が進行中で、キャッシュが古い可能性がある）
+    // 4.3.1 指定名前のリードモデルがある場合 → 重複あり
+    if (existingSystem != null) {
+      return true;
+    }
+
+    // 4.3.2 指定名前のリードモデルがない場合 → 重複なし
+    return false;
+  }
+
+  /**
+   * イベントストアから集約を復元
+   * @param systemId システムID
+   * @returns 復元されたシステム集約
+   */
+  private async reconstructSystemFromEventStore(systemId: string): Promise<System> {
+    // イベントストアから全イベントを取得
+    const events = await this.eventStore.getEvents(`system-${systemId}`);
+
+    // イベントソーシングパターン: イベントを順次適用して集約を復元
+    let system: System | null = null;
+
+    for (const event of events) {
+      if (event.type === 'SystemRegisteredEvent') {
+        // 初回イベント: システム集約を生成
+        system = System.reconstitute(event.data);
+      } else if (system != null) {
+        // 後続イベント: 既存集約に適用
+        system.applyEvent(event);
+      }
+    }
+
+    if (system == null) {
+      throw new SystemReconstitutionError(`Failed to reconstitute system with ID: ${systemId}`);
+    }
+
+    return system;
+  }
+}
+```
+
+**進行中コマンド追跡（Application層での実装）**:
+
+コマンド実行時に即座にRedisキャッシュでマーキングし、処理完了後に削除する。
+これにより、リードモデル反映前でも確実な重複チェックが可能となる。
+
+```typescript
+/**
+ * RegisterSystemCommandHandler - システム登録コマンドハンドラー
+ */
+@CommandHandler(RegisterSystemCommand)
+export class RegisterSystemCommandHandler implements ICommandHandler<RegisterSystemCommand> {
+  constructor(
+    private readonly systemDuplicationService: SystemDuplicationService,
+    private readonly systemRepository: SystemRepository,
+    private readonly eventStore: EventStore,
+    private readonly cacheManager: Cache,
+    private readonly eventBus: EventBus
+  ) {}
+
+  async execute(command: RegisterSystemCommand): Promise<SystemRegisteredEvent> {
+    // 1. コマンドから集約を生成
+    const system = System.register(command);
+    const systemId = system.getIdValue();
+    const systemName = system.getName();
+
+    // 2. 即座にRedisキャッシュでマーキング（TTL: 60秒）
+    // キャッシュキー: `pending_name:{システム名}`
+    // キャッシュ値: システムIDのリスト
+    await this.markPendingSystemName(systemName, systemId);
+
+    try {
+      // 3. ドメインサービスでの重複チェック
+      const isDuplicate = await this.systemDuplicationService.isDuplicate(system);
+
+      if (isDuplicate) {
+        throw new SystemNameAlreadyExistsError(
+          `System name "${systemName.value}" is already in use`,
+          systemName.value
+        );
+      }
+
+      // 4. イベントストアに永続化
+      const events = system.getUncommittedEvents();
+      await this.eventStore.saveEvents(`system-${systemId}`, events);
+
+      // 5. ドメインイベントをイベントバスに発行（非同期処理）
+      for (const event of events) {
+        await this.eventBus.publish(event);
+      }
+
+      // 6. イベント発行完了をマーク
+      system.markEventsAsCommitted();
+
+      return events[0] as SystemRegisteredEvent;
+
+    } finally {
+      // 7. 処理完了後にマーキングを削除（TTL前の早期削除）
+      await this.unmarkPendingSystemName(systemName, systemId);
+    }
+  }
+
+  /**
+   * 進行中のシステム名をマーキング
+   * @param systemName システム名
+   * @param systemId システムID
+   */
+  private async markPendingSystemName(systemName: SystemName, systemId: string): Promise<void> {
+    const cacheKey = `pending_name:${systemName.value}`;
+    const existingIds = await this.cacheManager.get<string[]>(cacheKey) || [];
+
+    // 既存リストにシステムIDを追加
+    const updatedIds = [...existingIds, systemId];
+
+    // TTL: 60秒（通常の処理時間を考慮）
+    await this.cacheManager.set(cacheKey, updatedIds, 60);
+  }
+
+  /**
+   * 進行中のシステム名マーキングを削除
+   * @param systemName システム名
+   * @param systemId システムID
+   */
+  private async unmarkPendingSystemName(systemName: SystemName, systemId: string): Promise<void> {
+    const cacheKey = `pending_name:${systemName.value}`;
+    const existingIds = await this.cacheManager.get<string[]>(cacheKey) || [];
+
+    // リストからシステムIDを削除
+    const updatedIds = existingIds.filter(id => id !== systemId);
+
+    if (updatedIds.length === 0) {
+      // リストが空になった場合はキャッシュを削除
+      await this.cacheManager.del(cacheKey);
+    } else {
+      // 残りのIDでキャッシュを更新
+      await this.cacheManager.set(cacheKey, updatedIds, 60);
+    }
+  }
+}
+```
+
+**オニオンアーキテクチャ適用**:
+
+- **ドメイン層**: `SystemDuplicationService`インターフェース定義（純粋なビジネスロジック）
+- **アプリケーション層**: `RegisterSystemCommandHandler`（ユースケースオーケストレーション + キャッシュマーキング）
+- **インフラストラクチャ層**: `SystemDuplicationService`具体実装（Redis、EventStore DB統合）
+
+**依存性の逆転原則（DIP）適用**:
+
+```typescript
+// ドメイン層: インターフェース定義
+export interface ISystemDuplicationService {
+  isDuplicate(system: System): Promise<boolean>;
+}
+
+// インフラストラクチャ層: 具体実装
+@Injectable()
+export class SystemDuplicationService implements ISystemDuplicationService {
+  // ... 上記実装
+}
+
+// アプリケーション層: インターフェースに依存
+export class RegisterSystemCommandHandler {
+  constructor(
+    private readonly systemDuplicationService: ISystemDuplicationService, // インターフェースに依存
+    // ...
+  ) {}
+}
+```
+
+**利点**:
+
+1. **結果整合性対応**: リードモデル反映前でも確実な重複チェックが可能
+2. **高速チェック**: リードモデルでのクイックチェック + キャッシュでの追加チェック
+3. **オニオンアーキテクチャ準拠**: 依存性の方向が正しく保持される
+4. **テスタビリティ**: インターフェースによるモック化が容易
+5. **拡張性**: 将来的な分散ロック機構への移行も可能
+
+**注意事項**:
+
+- TTLは処理時間を考慮して設定（60秒は推奨値）
+- finally句での確実なキャッシュクリーンアップが重要
+- イベントストアからの集約復元はコストが高いため、キャッシュヒット率を監視
+- 分散環境では、複数インスタンス間でのRedis共有が必要
+
+### 5.2 SystemExistenceService（レガシー実装）
+
+**注意**: このサービスは従来のトランザクション方式の実装例です。
+イベントソーシング環境では、上記の`SystemDuplicationService`を使用してください。
+
+**分散システム考慮事項**:
+
+- 分散ロック機構による同時実行制御
+- 最終的整合性の受け入れ
+- 補償処理（Saga パターン）
 
 ```typescript
 @Injectable()
