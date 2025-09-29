@@ -17,7 +17,7 @@ CREATE TABLE systems (
     -- Primary Identity
     system_id UUID PRIMARY KEY,
     name VARCHAR(255) NOT NULL,
-    type VARCHAR(20) NOT NULL CHECK (type IN ('WEB', 'API', 'DATABASE', 'BATCH', 'OTHER')),
+    type VARCHAR(20) NOT NULL REFERENCES system_types(type_code),
     status VARCHAR(20) NOT NULL CHECK (status IN ('PLANNING', 'ACTIVE', 'MAINTENANCE', 'DECOMMISSIONED', 'CANCELLED')),
 
     -- Host Configuration
@@ -93,13 +93,13 @@ CREATE TABLE system_packages (
     license_type VARCHAR(100),
 
     -- Composite unique constraint
-    UNIQUE(system_id, package_name, package_type),
-
-    -- Indexes for performance
-    INDEX idx_system_packages_system_id (system_id),
-    INDEX idx_system_packages_name_type (package_name, package_type),
-    INDEX idx_system_packages_security (is_security_compliant)
+    UNIQUE(system_id, package_name, package_type)
 );
+
+-- Indexes for performance (created separately)
+CREATE INDEX idx_system_packages_system_id ON system_packages(system_id);
+CREATE INDEX idx_system_packages_name_type ON system_packages(package_name, package_type);
+CREATE INDEX idx_system_packages_security ON system_packages(is_security_compliant);
 ```
 
 ### 1.4 system_name_reservations テーブル
@@ -120,7 +120,27 @@ CREATE TABLE system_name_reservations (
 CREATE INDEX idx_system_name_reservations_expires_at ON system_name_reservations(expires_at);
 ```
 
-### 1.5 Read Model View
+### 1.5 processed_events テーブル
+
+イベント処理の冪等性を保証するためのテーブル
+
+```sql
+CREATE TABLE processed_events (
+    event_id UUID PRIMARY KEY,
+    stream_name VARCHAR(255) NOT NULL,
+    event_type VARCHAR(100) NOT NULL,
+    event_number BIGINT NOT NULL,
+    processed_at TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT CURRENT_TIMESTAMP,
+
+    UNIQUE(stream_name, event_number)
+);
+
+CREATE INDEX idx_processed_events_stream ON processed_events(stream_name, event_number);
+CREATE INDEX idx_processed_events_type ON processed_events(event_type);
+CREATE INDEX idx_processed_events_processed_at ON processed_events(processed_at);
+```
+
+### 1.6 Read Model View
 
 システム情報の読み取り最適化ビュー
 
@@ -326,7 +346,8 @@ GROUP BY s.system_id, s.name, s.type, s.status, s.security_classification, s.cri
           "type": "string",
           "description": "イベント発生源"
         }
-      }
+      },
+      "required": ["correlationId", "causationId", "userId"]
     }
   },
   "required": [
@@ -336,7 +357,8 @@ GROUP BY s.system_id, s.name, s.type, s.status, s.security_classification, s.cri
     "occurredAt",
     "aggregateId",
     "aggregateVersion",
-    "data"
+    "data",
+    "metadata"
   ]
 }
 ```
@@ -402,6 +424,30 @@ GROUP BY s.system_id, s.name, s.type, s.status, s.security_classification, s.cri
         }
       },
       "required": ["systemId", "newConfiguration", "updatedAt"]
+    },
+    "metadata": {
+      "type": "object",
+      "properties": {
+        "correlationId": {
+          "type": "string",
+          "format": "uuid",
+          "description": "相関ID"
+        },
+        "causationId": {
+          "type": "string",
+          "format": "uuid",
+          "description": "因果ID"
+        },
+        "userId": {
+          "type": "string",
+          "description": "実行ユーザーID"
+        },
+        "source": {
+          "type": "string",
+          "description": "イベント発生源"
+        }
+      },
+      "required": ["correlationId", "causationId", "userId"]
     }
   },
   "required": [
@@ -411,7 +457,8 @@ GROUP BY s.system_id, s.name, s.type, s.status, s.security_classification, s.cri
     "occurredAt",
     "aggregateId",
     "aggregateVersion",
-    "data"
+    "data",
+    "metadata"
   ]
 }
 ```
@@ -486,6 +533,30 @@ GROUP BY s.system_id, s.name, s.type, s.status, s.security_classification, s.cri
         }
       },
       "required": ["systemId", "package", "installedAt"]
+    },
+    "metadata": {
+      "type": "object",
+      "properties": {
+        "correlationId": {
+          "type": "string",
+          "format": "uuid",
+          "description": "相関ID"
+        },
+        "causationId": {
+          "type": "string",
+          "format": "uuid",
+          "description": "因果ID"
+        },
+        "userId": {
+          "type": "string",
+          "description": "実行ユーザーID"
+        },
+        "source": {
+          "type": "string",
+          "description": "イベント発生源"
+        }
+      },
+      "required": ["correlationId", "causationId", "userId"]
     }
   },
   "required": [
@@ -495,7 +566,8 @@ GROUP BY s.system_id, s.name, s.type, s.status, s.security_classification, s.cri
     "occurredAt",
     "aggregateId",
     "aggregateVersion",
-    "data"
+    "data",
+    "metadata"
   ]
 }
 ```
@@ -562,6 +634,30 @@ GROUP BY s.system_id, s.name, s.type, s.status, s.security_classification, s.cri
         }
       },
       "required": ["systemId", "decommissionedAt"]
+    },
+    "metadata": {
+      "type": "object",
+      "properties": {
+        "correlationId": {
+          "type": "string",
+          "format": "uuid",
+          "description": "相関ID"
+        },
+        "causationId": {
+          "type": "string",
+          "format": "uuid",
+          "description": "因果ID"
+        },
+        "userId": {
+          "type": "string",
+          "description": "実行ユーザーID"
+        },
+        "source": {
+          "type": "string",
+          "description": "イベント発生源"
+        }
+      },
+      "required": ["correlationId", "causationId", "userId"]
     }
   },
   "required": [
@@ -571,7 +667,8 @@ GROUP BY s.system_id, s.name, s.type, s.status, s.security_classification, s.cri
     "occurredAt",
     "aggregateId",
     "aggregateVersion",
-    "data"
+    "data",
+    "metadata"
   ]
 }
 ```
@@ -650,29 +747,49 @@ $$ LANGUAGE plpgsql;
 fromStream('$ce-system')
     .when({
         'SystemRegistered': function(state, event) {
-            const systemName = event.data.name.toLowerCase();
+            try {
+                const systemName = event.data.name?.toLowerCase();
 
-            if (state.registeredNames && state.registeredNames[systemName]) {
-                throw new Error(`System name '${event.data.name}' already exists`);
+                if (!systemName) {
+                    // Log error but don't throw - emit to error stream
+                    linkTo('system-projection-errors', event);
+                    return state;
+                }
+
+                if (state.registeredNames && state.registeredNames[systemName]) {
+                    // Emit duplicate detection event instead of throwing
+                    linkTo('system-duplicate-names', event);
+                    return state;
+                }
+
+                if (!state.registeredNames) {
+                    state.registeredNames = {};
+                }
+
+                state.registeredNames[systemName] = {
+                    systemId: event.data.systemId,
+                    registeredAt: event.data.registeredAt
+                };
+
+                return state;
+            } catch (error) {
+                // Log error and continue - emit to error stream
+                linkTo('system-projection-errors', event);
+                return state;
             }
-
-            if (!state.registeredNames) {
-                state.registeredNames = {};
-            }
-
-            state.registeredNames[systemName] = {
-                systemId: event.data.systemId,
-                registeredAt: event.data.registeredAt
-            };
-
-            return state;
         },
         'SystemDecommissioned': function(state, event) {
-            const systemName = event.data.name?.toLowerCase();
-            if (state.registeredNames && systemName && state.registeredNames[systemName]) {
-                delete state.registeredNames[systemName];
+            try {
+                const systemName = event.data.name?.toLowerCase();
+                if (state.registeredNames && systemName && state.registeredNames[systemName]) {
+                    delete state.registeredNames[systemName];
+                }
+                return state;
+            } catch (error) {
+                // Log error and continue
+                linkTo('system-projection-errors', event);
+                return state;
             }
-            return state;
         }
     })
     .outputState();
@@ -681,34 +798,49 @@ fromStream('$ce-system')
 fromStream('$ce-system')
     .when({
         'SystemRegistered': function(state, event) {
-            if (!state.systemsByType) {
-                state.systemsByType = {};
+            try {
+                if (!state.systemsByType) {
+                    state.systemsByType = {};
+                }
+
+                const type = event.data.type;
+                if (!type) {
+                    linkTo('system-projection-errors', event);
+                    return state;
+                }
+
+                if (!state.systemsByType[type]) {
+                    state.systemsByType[type] = [];
+                }
+
+                state.systemsByType[type].push({
+                    systemId: event.data.systemId,
+                    name: event.data.name,
+                    status: 'ACTIVE', // 初期状態
+                    criticality: event.data.criticalityLevel,
+                    packageCount: event.data.initialPackages?.length || 0
+                });
+
+                return state;
+            } catch (error) {
+                linkTo('system-projection-errors', event);
+                return state;
             }
-
-            const type = event.data.type;
-            if (!state.systemsByType[type]) {
-                state.systemsByType[type] = [];
-            }
-
-            state.systemsByType[type].push({
-                systemId: event.data.systemId,
-                name: event.data.name,
-                status: 'ACTIVE', // 初期状態
-                criticality: event.data.criticalityLevel,
-                packageCount: event.data.initialPackages.length
-            });
-
-            return state;
         },
         'SystemDecommissioned': function(state, event) {
-            if (state.systemsByType) {
-                Object.keys(state.systemsByType).forEach(type => {
-                    state.systemsByType[type] = state.systemsByType[type].filter(
-                        system => system.systemId !== event.aggregateId
-                    );
-                });
+            try {
+                if (state.systemsByType) {
+                    Object.keys(state.systemsByType).forEach(type => {
+                        state.systemsByType[type] = state.systemsByType[type].filter(
+                            system => system.systemId !== event.aggregateId
+                        );
+                    });
+                }
+                return state;
+            } catch (error) {
+                linkTo('system-projection-errors', event);
+                return state;
             }
-            return state;
         }
     })
     .outputState();
