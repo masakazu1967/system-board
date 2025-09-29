@@ -117,10 +117,18 @@ package "Shared Domain Layer" {
   abstract class AggregateRoot {
     +aggregateId: AggregateId
     +version: number
-    +uncommittedEvents: DomainEvent[]
-    +markEventsAsCommitted(): void
+    -uncommittedEvents: DomainEvent[]
+
+    +constructor(aggregateId: AggregateId)
+    +getId(): AggregateId
+    +getVersion(): number
     +getUncommittedEvents(): DomainEvent[]
+    +markEventsAsCommitted(): void
+    +loadFromHistory(events: DomainEvent[]): void
+    +applyEvent(event: DomainEvent): void
     #addEvent(event: DomainEvent): void
+    #incrementVersion(): void
+    #abstract applyDomainEvent(event: DomainEvent): void
   }
 
   abstract class DomainEvent {
@@ -132,7 +140,7 @@ package "Shared Domain Layer" {
     +occurredOn: Date
     +correlationId: string
     +causationId?: string
-    +abstract getData(): any
+    +abstract getData(): unknown
   }
 }
 
