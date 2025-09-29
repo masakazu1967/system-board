@@ -140,12 +140,12 @@ CREATE INDEX idx_processed_events_type ON processed_events(event_type);
 CREATE INDEX idx_processed_events_processed_at ON processed_events(processed_at);
 ```
 
-### 1.6 Read Model View
+### 1.6 Read Model Materialized View
 
-システム情報の読み取り最適化ビュー
+システム情報の読み取り最適化マテリアライズドビュー（パフォーマンス最適化）
 
 ```sql
-CREATE VIEW system_summary_view AS
+CREATE MATERIALIZED VIEW system_summary_view AS
 SELECT
     s.system_id,
     s.name,
@@ -165,6 +165,12 @@ LEFT JOIN system_types st ON s.type = st.type_code
 LEFT JOIN system_packages sp ON s.system_id = sp.system_id
 GROUP BY s.system_id, s.name, s.type, s.status, s.security_classification, s.criticality_level,
          s.created_date, s.last_modified, s.decommission_date, st.type_name, st.description;
+
+-- Create unique index for concurrent refresh
+CREATE UNIQUE INDEX idx_system_summary_view_system_id ON system_summary_view(system_id);
+
+-- Refresh strategy (to be executed by application or cron)
+-- REFRESH MATERIALIZED VIEW CONCURRENTLY system_summary_view;
 ```
 
 ## 2. EventStore DB イベントスキーマ設計
@@ -705,6 +711,21 @@ CREATE INDEX idx_system_name_reservations_expires_at ON system_name_reservations
 -- 部分インデックス (パフォーマンス最適化)
 CREATE INDEX idx_systems_active_high_criticality ON systems(system_id, name)
 WHERE status = 'ACTIVE' AND criticality_level IN ('HIGH', 'CRITICAL');
+
+-- カバリングインデックス (テーブルスキャンを回避)
+-- System list with basic info (avoids table scan)
+CREATE INDEX idx_systems_list_covering ON systems(status, type, last_modified)
+    INCLUDE (system_id, name, security_classification, criticality_level)
+    WHERE status IN ('ACTIVE', 'MAINTENANCE');
+
+-- Package security check (covering index)
+CREATE INDEX idx_system_packages_security_covering ON system_packages(system_id, is_security_compliant)
+    INCLUDE (package_name, package_version, package_type)
+    WHERE is_security_compliant = false;
+
+-- Audit query optimization
+CREATE INDEX idx_systems_created_by ON systems(created_by);
+CREATE INDEX idx_systems_last_modified_by ON systems(last_modified_by);
 ```
 
 ### 3.2 制約とトリガー
@@ -726,6 +747,20 @@ CREATE TRIGGER update_systems_last_modified
 CREATE TRIGGER update_system_packages_last_updated
     BEFORE UPDATE ON system_packages
     FOR EACH ROW EXECUTE FUNCTION update_last_modified_column();
+
+-- バージョン自動インクリメント関数（オプティミスティックロック用）
+CREATE OR REPLACE FUNCTION increment_version_on_update()
+RETURNS TRIGGER AS $$
+BEGIN
+    NEW.version = OLD.version + 1;
+    NEW.last_modified = CURRENT_TIMESTAMP;
+    RETURN NEW;
+END;
+$$ LANGUAGE plpgsql;
+
+CREATE TRIGGER update_systems_version
+    BEFORE UPDATE ON systems
+    FOR EACH ROW EXECUTE FUNCTION increment_version_on_update();
 
 -- 期限切れ予約の自動削除関数
 CREATE OR REPLACE FUNCTION cleanup_expired_reservations()
@@ -845,6 +880,128 @@ fromStream('$ce-system')
     })
     .outputState();
 ```
+
+### 3.4 イベントプロジェクション戦略
+
+#### イベントハンドラーフロー
+
+```
+┌─────────────────┐
+│  EventStore DB  │
+│  (Write Model)  │
+└────────┬────────┘
+         │
+         │ 1. Event Persistence
+         │
+         ▼
+┌─────────────────┐
+│   Event Stream  │
+│   system-*      │
+└────────┬────────┘
+         │
+         │ 2. Event Subscription
+         │    (NestJS subscribes)
+         ▼
+┌─────────────────┐
+│ Event Handlers  │
+│  (Projections)  │
+└────────┬────────┘
+         │
+         │ 3. Read Model Update
+         │    (Idempotency Check)
+         ▼
+┌─────────────────┐
+│  PostgreSQL DB  │
+│  (Read Model)   │
+└────────┬────────┘
+         │
+         │ 4. Cache Invalidation
+         ▼
+┌─────────────────┐
+│   Redis Cache   │
+└─────────────────┘
+```
+
+#### 冪等性保証
+
+すべてのイベントハンドラーは以下の方法で冪等性を保証する：
+
+```typescript
+// Example: Event Handler with Idempotency
+async handleSystemRegistered(event: SystemRegistered): Promise<void> {
+    // Step 1: Check if already processed
+    const exists = await this.processedEventsRepository.exists(event.eventId);
+    if (exists) {
+        this.logger.debug(`Event ${event.eventId} already processed, skipping`);
+        return; // Skip duplicate
+    }
+
+    // Step 2: Begin transaction
+    await this.dataSource.transaction(async (manager) => {
+        // Step 3: Update Read Model (Upsert operation)
+        await manager.query(`
+            INSERT INTO systems (system_id, name, type, status, ...)
+            VALUES ($1, $2, $3, $4, ...)
+            ON CONFLICT (system_id) DO UPDATE SET
+                name = EXCLUDED.name,
+                last_modified = CURRENT_TIMESTAMP,
+                version = systems.version + 1
+        `, [event.data.systemId, event.data.name, ...]);
+
+        // Step 4: Mark event as processed
+        await manager.query(`
+            INSERT INTO processed_events (event_id, stream_name, event_type, event_number)
+            VALUES ($1, $2, $3, $4)
+        `, [event.eventId, event.streamName, event.eventType, event.eventNumber]);
+
+        // Step 5: Invalidate cache
+        await this.cacheService.invalidate(`system:${event.data.systemId}`);
+    });
+}
+```
+
+#### Read Modelの再構築
+
+イベントストアから全イベントをリプレイしてRead Modelを再構築する手順：
+
+```sql
+-- Step 1: Truncate Read Models (data loss warning!)
+TRUNCATE systems, system_packages, system_name_reservations CASCADE;
+TRUNCATE processed_events;
+
+-- Step 2: Reset materialized view
+DROP MATERIALIZED VIEW IF EXISTS system_summary_view;
+CREATE MATERIALIZED VIEW system_summary_view AS
+    -- (definition above)
+;
+CREATE UNIQUE INDEX idx_system_summary_view_system_id ON system_summary_view(system_id);
+```
+
+```typescript
+// Step 3: Replay all events from EventStore (application code)
+async rebuildReadModel(): Promise<void> {
+    const streams = await this.eventStore.readAllStreams('system-*');
+
+    for (const stream of streams) {
+        const events = await this.eventStore.readStream(stream.streamName);
+
+        for (const event of events) {
+            // Process each event in order
+            await this.eventHandler.handle(event);
+        }
+    }
+
+    // Step 4: Refresh materialized views
+    await this.dataSource.query('REFRESH MATERIALIZED VIEW CONCURRENTLY system_summary_view');
+}
+```
+
+#### エラーハンドリング戦略
+
+- **プロジェクションエラー**: `system-projection-errors` ストリームに記録
+- **重複名検出**: `system-duplicate-names` ストリームに記録
+- **リトライ戦略**: 指数バックオフで最大3回リトライ
+- **Dead Letter Queue**: 3回失敗したイベントは `system-dlq` ストリームへ移動
 
 ## 4. データマイグレーション設計
 
