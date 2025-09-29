@@ -726,12 +726,12 @@ class System extends AggregateRoot<SystemId, SystemProps> {
 
 ### 3.0 アーキテクチャコンテキスト
 
-**CQRS + Event Sourcing + EventStore Subscription**:
+**CQRS + Event Sourcing + Kafka First**:
 
 - **コマンド側**: イベントストア永続化のみ（シンプルかつ高性能）
 - **クエリ側**: PostgreSQL読み取りモデルからの検索
-- **イベントストア**: EventStore DB（真実の源泉 + Subscription機能）
-- **メッセージブローカー**: Kafka（EventStore Subscriptionからの確実な配信）
+- **イベントストア**: Kurrent DB（監査ログ + リプレイ用永続ストレージ）
+- **メッセージブローカー**: Kafka（ダブルコミット回避のファースト配信）
 
 ### 3.0.1 最適な全体アーキテクチャ
 
@@ -749,14 +749,17 @@ sequenceDiagram
     Client->>API: POST /systems
     API->>CH: RegisterSystemCommand
 
-    Note over CH,ES: Event Sourcing: イベントのみ永続化
-    CH->>ES: append(events)
+    Note over CH,Kafka: Kafka First (ダブルコミット回避)
+    CH->>Kafka: publish(SystemRegistered)
+    Kafka-->>CH: Success (delivery confirmation)
     CH-->>API: SystemId
     API-->>Client: 201 Created
 
-    Note over ES,Sub: EventStore Subscription (Pull-based)
-    ES-->>Sub: event stream subscription
-    Sub->>Kafka: publish(event) with retry
+    Note over Kafka,KafkaSub: Kurrent DB非同期永続化
+    Kafka->>KafkaSub: SystemRegistered
+    KafkaSub->>ES: append(event)
+    note right: 永続ストレージ<br/>for replay & audit
+    ES-->>KafkaSub: Success
 
     Note over Sub: At-least-once delivery保証
     rect rgb(255, 245, 245)
@@ -776,14 +779,14 @@ sequenceDiagram
         Note over ES: 真実の源泉<br/>イベントストア
     end
     rect rgb(240, 255, 240)
-        Note over Sub: 確実な配信<br/>Pull-based + Retry
+        Note over Kafka: 確実な配信<br/>At-least-once + Retry
     end
     rect rgb(240, 240, 255)
         Note over RM: 冪等性保証<br/>重複処理安全
     end
 ```
 
-**EventStore Subscription + At-least-once アーキテクチャの利点**:
+**Kafka First + Kurrent DB非同期永続化アーキテクチャの利点**:
 
 1. **シンプル性**: コマンドハンドラーはイベントストア永続化のみ
 2. **確実な配信**: リトライ機構で最終的な配信保証
@@ -1067,7 +1070,7 @@ export class RegisterSystemHandler {
       system.getVersion()
     );
 
-    // EventStore Subscriptionが自動的にKafkaに配信
+    // Kafkaファースト配信でダブルコミット回避
 
     system.markEventsAsCommitted();
     return system.getSystemId();
@@ -1523,20 +1526,20 @@ export interface SerializableSystemRegisteredEventData {
 }
 ```
 
-### 4.2 EventStore Subscription + At-least-once による確実なイベント配信
+### 4.2 Kafka First + Kurrent DB非同期永続化による確実なイベント配信
 
-- EventStoreSubscriber: EventStore DB Subscriptionベースのサブスクライバー
-- Pull-based Pattern: イベントストアからの能動的な取得
+- KurrentKafkaSubscriber: Kafkaメッセージを受信しKurrent DBに永続化
+- Kafka First Delivery: ドメインイベントを先にKafkaに配信
 - At-least-once Delivery: リトライ機構で最終的な配信保証
 - 配信後はイベントハンドラーでリードモデル更新
 - Event ID による重複処理防止（冪等性保証）
 
 ```typescript
-// 簡素化されたEventStore Subscription（NestJS CQRS統合）
+// KafkaからKurrent DBに非同期永続化
 @Injectable()
 export class EventStoreSubscriber implements OnModuleInit {
   constructor(
-    private readonly eventStoreClient: EventStoreDBClient,
+    private readonly kurrentClient: KurrentDBClient,
     private readonly eventBus: EventBus,
     private readonly logger: Logger
   ) {}
@@ -1551,9 +1554,9 @@ export class EventStoreSubscriber implements OnModuleInit {
         onError: this.handleError.bind(this)
       });
 
-      this.logger.info('EventStore subscription started for system events');
+      this.logger.info('Kafka to Kurrent DB subscription started');
     } catch (error) {
-      this.logger.error('Failed to start EventStore subscription', { error: error.message });
+      this.logger.error('Failed to start Kafka to Kurrent DB subscription', { error: error.message });
       throw error;
     }
   }
@@ -1597,7 +1600,7 @@ export class EventStoreSubscriber implements OnModuleInit {
   }
 
   private handleError(subscription: PersistentSubscription, reason: string, error?: Error): void {
-    this.logger.error('EventStore subscription error', {
+    this.logger.error('Kafka to Kurrent DB subscription error', {
       subscriptionId: subscription.subscriptionId,
       reason,
       error: error?.message
@@ -2305,86 +2308,84 @@ export interface MessageHandler {
   handle(message: MessageEnvelope): Promise<void>;
 }
 
-// EventStore Subscription実装（NestJS CQRS統合）
+// Kurrent Kafka Subscriber実装（Kurrent DB非同期永続化）
 @Injectable()
-export class EventStoreSubscriptionService implements OnModuleInit {
+export class KurrentKafkaSubscriber implements OnModuleInit {
   constructor(
-    private readonly eventStoreClient: EventStoreDBClient,
-    private readonly eventBus: EventBus,
+    private readonly kurrentClient: KurrentDBClient,
+    private readonly kafkaService: KafkaService,
     private readonly logger: Logger
   ) {}
 
   async onModuleInit(): Promise<void> {
-    // システム管理コンテキストのイベント購読
-    await this.subscribeToSystemEvents();
+    // Kafkaからイベントを受信してKurrent DBに保存
+    await this.subscribeToKafkaEvents();
   }
 
-  private async subscribeToSystemEvents(): Promise<void> {
-    try {
-      const subscription = this.eventStoreClient.subscribeToAll({
-        fromPosition: undefined, // 最新の位置から開始
-        filter: {
-          streamNamePrefix: ['system-'] // システム関連ストリームのみ
-        },
-        resolveLinkTos: true
-      });
+  private async subscribeToKafkaEvents(): Promise<void> {
+    await this.kafkaService.subscribe({
+      topics: ['system-events', 'vulnerability-events', 'task-events'],
+      groupId: 'eventstore-persistence-group'
+    });
 
-      for await (const resolvedEvent of subscription) {
-        try {
-          await this.handleSystemEvent(resolvedEvent);
-        } catch (error) {
-          this.logger.error('Failed to handle event', {
-            eventId: resolvedEvent.event.id,
-            eventType: resolvedEvent.event.type,
-            error: error.message
-          });
-        }
+    this.kafkaService.run({
+      eachMessage: async ({ topic, partition, message }) => {
+        await this.handleKafkaMessage(topic, message);
       }
+    });
+  }
+
+  private async handleKafkaMessage(topic: string, message: any): Promise<void> {
+    try {
+      const eventData = JSON.parse(message.value.toString());
+      const eventType = message.headers['event-type'].toString();
+
+      // Kurrent DBに永続化
+      await this.persistToEventStore(eventData, eventType);
+
+      this.logger.debug('Event persisted to Kurrent DB from Kafka', {
+        eventType,
+        eventId: eventData.eventId,
+        topic
+      });
     } catch (error) {
-      this.logger.error('EventStore subscription failed', { error: error.message });
+      this.logger.error('Failed to persist event to Kurrent DB', {
+        topic,
+        error: error.message
+      });
       throw error;
     }
   }
 
-  private async handleSystemEvent(resolvedEvent: ResolvedEvent): Promise<void> {
-    const eventType = resolvedEvent.event.type;
-    const eventData = new TextDecoder().decode(resolvedEvent.event.data);
-    const parsedData = JSON.parse(eventData);
+  private async persistToEventStore(eventData: any, eventType: string): Promise<void> {
+    const streamName = this.getStreamName(eventData.aggregateType, eventData.aggregateId);
 
-    // コンテキスト間配信のためKafkaに再配信
-    const domainEvent = this.reconstructDomainEvent(eventType, parsedData);
+    const eventToStore = {
+      eventId: eventData.eventId,
+      eventType: eventType,
+      data: eventData.data,
+      metadata: {
+        correlationId: eventData.correlationId,
+        causationId: eventData.causationId,
+        occurredOn: eventData.occurredOn
+      }
+    };
 
-    if (domainEvent) {
-      await this.eventBus.publish(domainEvent);
-
-      this.logger.debug('Event republished to EventBus', {
-        eventType,
-        eventId: resolvedEvent.event.id,
-        streamId: resolvedEvent.event.streamId
-      });
-    }
+    await this.kurrentClient.appendToStream(streamName, [eventToStore], {
+      expectedRevision: 'any'
+    });
   }
 
-  private reconstructDomainEvent(eventType: string, eventData: any): any {
-    switch (eventType) {
-      case 'SystemRegistered':
-        return SystemRegistered.fromEventStore(eventData);
-      case 'SystemConfigurationUpdated':
-        return SystemConfigurationUpdated.fromEventStore(eventData);
-      case 'SystemDecommissioned':
-        return SystemDecommissioned.fromEventStore(eventData);
-      default:
-        this.logger.warn('Unknown event type', { eventType });
-        return null;
-    }
+  private getStreamName(aggregateType: string, aggregateId: string): string {
+    return `${aggregateType}-${aggregateId}`;
   }
 }
 
-// ドメインイベント発行実装（Kafkaベース）
+// Kafka Firstイベントパブリッシャー実装
 @Injectable()
-export class KafkaDomainEventPublisher implements DomainEventPublisher {
+export class KafkaFirstEventPublisher implements DomainEventPublisher {
   constructor(
-    private readonly messageBroker: MessageBrokerService,
+    private readonly kafkaService: KafkaService,
     private readonly logger: Logger
   ) {}
 
@@ -2398,64 +2399,57 @@ export class KafkaDomainEventPublisher implements DomainEventPublisher {
   }
 
   async publish(event: DomainEvent): Promise<void> {
-    try {
-      const topic = this.determineTopicByEventType(event.eventType);
+    const topic = this.determineTopicByEventType(event.eventType);
 
-      const message: MessageEnvelope = {
-        key: event.aggregateId,
-        value: JSON.stringify({
-          eventId: event.eventId,
-          eventType: event.eventType,
-          aggregateId: event.aggregateId,
-          aggregateType: event.aggregateType,
-          aggregateVersion: event.aggregateVersion,
-          occurredOn: event.occurredOn.toISOString(),
-          correlationId: event.correlationId,
-          causationId: event.causationId,
-          data: event.getData()
-        }),
-        headers: {
-          'content-type': 'application/json',
-          'event-type': event.eventType,
-          'correlation-id': event.correlationId,
-          'aggregate-type': event.aggregateType
-        },
-        timestamp: event.occurredOn
-      };
-
-      await this.messageBroker.send(topic, message);
-
-      this.logger.debug('Event published successfully', {
+    const message = {
+      key: event.aggregateId,
+      value: JSON.stringify({
+        eventId: event.eventId,
         eventType: event.eventType,
         aggregateId: event.aggregateId,
-        topic
-      });
-    } catch (error) {
-      this.logger.error('Failed to publish event', {
-        eventType: event.eventType,
-        aggregateId: event.aggregateId,
-        error: error.message
-      });
-      throw error;
-    }
+        aggregateType: event.aggregateType,
+        aggregateVersion: event.aggregateVersion,
+        occurredOn: event.occurredOn.toISOString(),
+        correlationId: event.correlationId,
+        causationId: event.causationId,
+        data: event.getData()
+      }),
+      headers: {
+        'content-type': 'application/json',
+        'event-type': event.eventType,
+        'correlation-id': event.correlationId
+      }
+    };
+
+    // Kafkaへの配信成功を待ってからCommand Handler完了
+    await this.kafkaService.send({
+      topic,
+      messages: [message]
+    });
+
+    this.logger.debug('Event published to Kafka first (no double commit)', {
+      eventType: event.eventType,
+      aggregateId: event.aggregateId,
+      topic
+    });
   }
 
   private determineTopicByEventType(eventType: string): string {
     // イベントタイプごとのトピック振り分け
     const topicMap = {
       // System Management Context
-      'SystemRegistered': 'system-events',
+      [SystemRegistered.EVENT_NAME]: 'system-events',
       'SystemConfigurationUpdated': 'system-events',
       'SystemDecommissioned': 'system-events',
       'SystemSecurityAlert': 'security-events',
 
       // Vulnerability Management Context
-      'VulnerabilityDetected': 'vulnerability-events',
+      [VulnerabilityDetected.EVENT_NAME]: 'vulnerability-events',
       'VulnerabilityScanCompleted': 'vulnerability-events',
       'VulnerabilityResolved': 'vulnerability-events',
 
       // Task Management Context
-      'TaskCreated': 'task-events',
+      [TaskCreated.EVENT_NAME]: 'task-events',
       'TaskCompleted': 'task-events',
       'HighPriorityTaskCreated': 'urgent-events'
     };
@@ -2634,7 +2628,7 @@ export class PostgreSQLNameReservationRepository implements NameReservationRepos
 @Injectable()
 export class EventStoreDBEventStore implements EventStore {
   constructor(
-    private readonly eventStoreClient: EventStoreDBClient,
+    private readonly kurrentClient: KurrentDBClient,
     private readonly eventSerializer: EventSerializer,
     private readonly logger: Logger
   ) {}
@@ -3083,7 +3077,7 @@ export class CyclicDependencyError extends SystemDomainError {
   }
 }
 
-// EventStore DB Subscription 関連インターフェース
+// Kurrent DB 関連インターフェース
 export interface ResolvedEvent {
   event: {
     eventId: string;
@@ -3095,7 +3089,7 @@ export interface ResolvedEvent {
   originalEventNumber: number;
 }
 
-export interface EventStoreSubscriptionOptions {
+export interface KurrentDBSubscriptionOptions {
   fromPosition: 'start' | 'end' | string;
   filter?: {
     streamNamePrefix?: string;
@@ -3111,7 +3105,7 @@ export interface PersistentSubscription {
   streamName: string;
 }
 
-export interface EventStoreDBClient {
+export interface KurrentDBClient {
   // EventStore DB v5 正式API
   appendToStream(
     streamName: string,

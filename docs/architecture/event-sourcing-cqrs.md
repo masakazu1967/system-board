@@ -391,7 +391,7 @@ abstract class DomainEvent {
   +occurredOn: Date
   +correlationId: string
   +causationId?: string
-  +abstract getData(): any
+  +abstract getData(): unknown
 }
 
 package "System Management Events" {
