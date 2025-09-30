@@ -102,6 +102,102 @@ CREATE INDEX idx_system_packages_name_type ON system_packages(package_name, pack
 CREATE INDEX idx_system_packages_security ON system_packages(is_security_compliant);
 ```
 
+#### パーティショニング戦略の検討
+
+**設計決定**: system_packagesテーブルに対して**当面はパーティショニングを実装しない**
+
+##### 理由
+
+1. **データ規模**: 予想される総レコード数は5,000～10,000件程度（システム数500-1000 × パッケージ平均5-10個）
+   - PostgreSQLは数百万レコードまで通常のテーブルで高速動作
+   - 現時点の規模ではパーティショニングの利点を享受できない
+
+2. **クエリパターン**: 主なクエリは以下の通りでインデックスで十分対応可能
+   - システム別パッケージ一覧: `idx_system_packages_system_id`で最適化済み
+   - パッケージ名検索: `idx_system_packages_name_type`で最適化済み
+   - セキュリティ準拠チェック: `idx_system_packages_security`で最適化済み
+
+3. **運用複雑性**: パーティショニング導入により以下の制約が発生
+   - PRIMARY KEYはパーティションキーを含む必要がある
+   - UNIQUE制約もパーティションキーを含む必要がある
+   - パーティション管理の運用負荷増加
+
+##### 将来的な再検討基準
+
+以下の条件に該当する場合、パーティショニングの導入を検討する：
+
+1. **データ量の増加**: 総レコード数が10万件を超えた場合
+2. **クエリパフォーマンス劣化**: インデックスを使用しても100ms以上かかるクエリが発生
+3. **定期的な大量削除**: 古いパッケージデータを定期的に削除する運用が必要になった場合
+4. **時系列分析の需要**: install_dateによる時系列分析が頻繁に必要になった場合
+
+##### 将来的な実装候補
+
+パーティショニングを導入する場合の候補アプローチ：
+
+**候補1: Hash Partitioning by system_id**（推奨）
+
+```sql
+-- システムIDでハッシュパーティショニング（均等分散）
+CREATE TABLE system_packages (
+    -- 列定義は同じ
+    id UUID,
+    system_id UUID NOT NULL,
+    -- ...
+    PRIMARY KEY (id, system_id)  -- パーティションキーを含める必要あり
+) PARTITION BY HASH (system_id);
+
+-- 4つのパーティションを作成（均等分散）
+CREATE TABLE system_packages_p0 PARTITION OF system_packages FOR VALUES WITH (MODULUS 4, REMAINDER 0);
+CREATE TABLE system_packages_p1 PARTITION OF system_packages FOR VALUES WITH (MODULUS 4, REMAINDER 1);
+CREATE TABLE system_packages_p2 PARTITION OF system_packages FOR VALUES WITH (MODULUS 4, REMAINDER 2);
+CREATE TABLE system_packages_p3 PARTITION OF system_packages FOR VALUES WITH (MODULUS 4, REMAINDER 3);
+```
+
+**利点**:
+- システムごとのパッケージクエリが同一パーティション内で完結（Partition Pruning）
+- 均等にデータ分散される
+- パーティション管理が自動的
+
+**候補2: Range Partitioning by install_date**
+
+```sql
+-- インストール日でレンジパーティショニング（時系列分析向け）
+CREATE TABLE system_packages (
+    -- 列定義は同じ
+    id UUID,
+    install_date TIMESTAMP WITH TIME ZONE NOT NULL,
+    -- ...
+    PRIMARY KEY (id, install_date)  -- パーティションキーを含める必要あり
+) PARTITION BY RANGE (install_date);
+
+-- 四半期ごとにパーティション作成
+CREATE TABLE system_packages_2025q1 PARTITION OF system_packages
+    FOR VALUES FROM ('2025-01-01') TO ('2025-04-01');
+CREATE TABLE system_packages_2025q2 PARTITION OF system_packages
+    FOR VALUES FROM ('2025-04-01') TO ('2025-07-01');
+-- ... 以降も同様
+```
+
+**利点**:
+- 時系列クエリの高速化
+- 古いデータの一括削除が高速（パーティションDROP）
+- pg_partman拡張で自動パーティション管理可能
+
+**欠点**:
+- パーティション作成の運用負荷
+- 時系列クエリ以外では効果薄い
+
+##### 現在の最適化戦略
+
+パーティショニングの代わりに、以下のインデックス戦略で性能を確保：
+
+1. **システム別クエリ**: `idx_system_packages_system_id`
+2. **パッケージ名検索**: `idx_system_packages_name_type`（複合インデックス）
+3. **セキュリティ準拠フィルタ**: `idx_system_packages_security`（部分インデックス）
+
+これらのインデックスにより、予想されるデータ規模では十分なパフォーマンスを維持できる。
+
 ### 1.4 システム名の一意性保証（Redis-based）
 
 **設計決定**: PostgreSQLテーブルではなく、**Redis-based同期予約**を採用
@@ -152,7 +248,7 @@ async registerSystem(command: RegisterSystemCommand): Promise<SystemId> {
 
 #### Redis Key設計
 
-```
+```text
 # 一時予約（コマンド処理中）
 Key: system:name:reservation:{systemName}
 Value: {aggregateId}
@@ -276,7 +372,7 @@ CREATE INDEX idx_system_host_history_changed_by ON system_host_history(changed_b
 
 #### 使用例
 
-**1. 現在の構成を取得**
+**1. 現在の構成を取得**:
 
 ```sql
 SELECT
@@ -291,7 +387,7 @@ WHERE system_id = '550e8400-e29b-41d4-a716-446655440000'
   AND effective_to IS NULL;
 ```
 
-**2. 特定時点の構成を取得**
+**2. 特定時点の構成を取得**:
 
 ```sql
 SELECT
@@ -306,7 +402,7 @@ WHERE system_id = '550e8400-e29b-41d4-a716-446655440000'
   AND (effective_to IS NULL OR effective_to > '2025-06-01T00:00:00Z');
 ```
 
-**3. 構成変更履歴を取得**
+**3. 構成変更履歴を取得**:
 
 ```sql
 SELECT
@@ -322,7 +418,7 @@ WHERE system_id = '550e8400-e29b-41d4-a716-446655440000'
 ORDER BY effective_from DESC;
 ```
 
-**4. スペック増強の傾向分析**
+**4. スペック増強の傾向分析**:
 
 ```sql
 SELECT
@@ -389,6 +485,7 @@ EXCLUDE USING gist (
 この制約により、同一システムで有効期間が重複するレコードの挿入を防ぎます。
 
 **例**:
+
 - レコード1: `effective_from='2025-01-01', effective_to='2025-06-01'` ✅
 - レコード2: `effective_from='2025-06-01', effective_to=NULL` ✅
 - レコード3: `effective_from='2025-05-01', effective_to='2025-07-01'` ❌ エラー（重複）
@@ -1510,9 +1607,10 @@ async execute(command: RegisterSystemCommand): Promise<SystemId> {
 
 **設計決定**: PostgreSQLの`pg_cron`拡張ではなく、**NestJSのスケジューラー**を使用
 
-##### 理由
+##### 3.3.6.1 理由
 
 PostgreSQL `pg_cron`拡張の問題点：
+
 1. **環境依存**: すべてのPostgreSQL環境で利用可能とは限らない
 2. **監視困難**: データベース側の実行ログをアプリケーション側で把握できない
 3. **テスト困難**: データベース拡張のテストが複雑
@@ -1762,6 +1860,7 @@ interface CleanupMetrics {
 ```
 
 **Microsoft Teamsアラート例**:
+
 ```json
 {
   "title": "🧹 System Cleanup Failed",
@@ -1797,6 +1896,7 @@ export class CleanupProcessedEventsCommand extends CommandRunner {
 ```
 
 **実行例**:
+
 ```bash
 # 手動クリーンアップ実行
 npm run cli cleanup:processed-events
@@ -1927,7 +2027,7 @@ fromStream('$ce-system')
 
 #### イベントハンドラーフロー
 
-```
+```text
 ┌─────────────────┐
 │  EventStore DB  │
 │  (Write Model)  │
