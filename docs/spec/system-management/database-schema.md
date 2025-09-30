@@ -155,11 +155,12 @@ CREATE TABLE system_packages_p3 PARTITION OF system_packages FOR VALUES WITH (MO
 ```
 
 **利点**:
+
 - システムごとのパッケージクエリが同一パーティション内で完結（Partition Pruning）
 - 均等にデータ分散される
 - パーティション管理が自動的
 
-**候補2: Range Partitioning by install_date**
+**候補2: Range Partitioning by install_date**:
 
 ```sql
 -- インストール日でレンジパーティショニング（時系列分析向け）
@@ -180,11 +181,13 @@ CREATE TABLE system_packages_2025q2 PARTITION OF system_packages
 ```
 
 **利点**:
+
 - 時系列クエリの高速化
 - 古いデータの一括削除が高速（パーティションDROP）
 - pg_partman拡張で自動パーティション管理可能
 
 **欠点**:
+
 - パーティション作成の運用負荷
 - 時系列クエリ以外では効果薄い
 
@@ -202,7 +205,7 @@ CREATE TABLE system_packages_2025q2 PARTITION OF system_packages
 
 **設計決定**: PostgreSQLテーブルではなく、**Redis-based同期予約**を採用
 
-#### 理由
+#### 1.4.1 理由
 
 PostgreSQLテーブルでの予約は以下の問題があります：
 
