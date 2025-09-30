@@ -118,13 +118,48 @@ CREATE TABLE dashboard_system_view (
 );
 
 -- ============ テーブルコメント ============
-COMMENT ON TABLE dashboard_system_view IS 'ダッシュボード専用の非正規化システムビュー（Read Model）';
-COMMENT ON COLUMN dashboard_system_view.system_id IS 'システムID（主キー）';
-COMMENT ON COLUMN dashboard_system_view.vulnerability_count IS '脆弱性総数（全重要度）';
-COMMENT ON COLUMN dashboard_system_view.max_cvss_score IS '最大CVSSスコア（v3.1）';
-COMMENT ON COLUMN dashboard_system_view.has_eol_warnings IS 'EOL警告フラグ（90日以内にEOL到達）';
-COMMENT ON COLUMN dashboard_system_view.eol_days_remaining IS '最短EOLまでの日数';
-COMMENT ON COLUMN dashboard_system_view.last_event_applied_at IS '最終イベント適用日時（Event Sourcing）';
+COMMENT ON TABLE dashboard_system_view IS 'ダッシュボード専用の非正規化システムビュー（Read Model）- Event Projectionにより非同期更新';
+
+-- 主キー
+COMMENT ON COLUMN dashboard_system_view.system_id IS 'システムID（主キー）- System集約のID';
+
+-- システム基本情報
+COMMENT ON COLUMN dashboard_system_view.system_name IS 'システム名 - 一意制約あり、255文字以内';
+COMMENT ON COLUMN dashboard_system_view.system_type IS 'システム種別 - ENUM値（例: WEB_APPLICATION, DATABASE, MIDDLEWARE）';
+COMMENT ON COLUMN dashboard_system_view.system_status IS 'システムステータス - ENUM値（ACTIVE, INACTIVE, MAINTENANCE, DECOMMISSIONED）';
+COMMENT ON COLUMN dashboard_system_view.criticality IS '重要度レベル - ENUM値（CRITICAL, HIGH, MEDIUM, LOW）';
+COMMENT ON COLUMN dashboard_system_view.security_classification IS 'セキュリティ分類 - ENUM値（TOP_SECRET, SECRET, CONFIDENTIAL, PUBLIC）';
+
+-- 脆弱性集約データ
+COMMENT ON COLUMN dashboard_system_view.vulnerability_count IS '脆弱性総数（全重要度）- Vulnerability Context から集約';
+COMMENT ON COLUMN dashboard_system_view.high_severity_vulnerabilities IS '高重要度脆弱性数 - CVSS 7.0-8.9';
+COMMENT ON COLUMN dashboard_system_view.critical_vulnerabilities IS 'クリティカル脆弱性数 - CVSS 9.0-10.0';
+COMMENT ON COLUMN dashboard_system_view.max_cvss_score IS '最大CVSSスコア（v3.1）- 範囲: 0.0-10.0、NULL許容';
+COMMENT ON COLUMN dashboard_system_view.latest_vulnerability_date IS '最新脆弱性検出日時 - 最も新しく検出された脆弱性のタイムスタンプ';
+
+-- EOL（サポート終了）集約データ
+COMMENT ON COLUMN dashboard_system_view.has_eol_warnings IS 'EOL警告フラグ - 90日以内にEOL到達するパッケージが存在する場合TRUE';
+COMMENT ON COLUMN dashboard_system_view.eol_days_remaining IS '最短EOLまでの日数 - NULL許容、負数は既にEOL到達を示す';
+COMMENT ON COLUMN dashboard_system_view.eol_packages_count IS 'EOL対象パッケージ数 - 90日以内にEOL到達するパッケージの総数';
+COMMENT ON COLUMN dashboard_system_view.nearest_eol_date IS '最も近いEOL日付 - NULL許容、複数パッケージの中で最も早いEOL日';
+
+-- タスク集約データ
+COMMENT ON COLUMN dashboard_system_view.open_task_count IS 'オープンタスク数 - 未完了タスクの総数（Task Context から集約）';
+COMMENT ON COLUMN dashboard_system_view.urgent_task_count IS '緊急タスク数 - 優先度が「緊急」のタスク数';
+COMMENT ON COLUMN dashboard_system_view.overdue_task_count IS '期限切れタスク数 - 期限を過ぎた未完了タスクの数';
+COMMENT ON COLUMN dashboard_system_view.latest_task_due_date IS '最新タスク期限 - NULL許容、最も近い未完了タスクの期限';
+
+-- パッケージサマリー
+COMMENT ON COLUMN dashboard_system_view.total_packages IS '総パッケージ数 - システムにインストールされている全パッケージの総数';
+COMMENT ON COLUMN dashboard_system_view.vulnerable_packages IS '脆弱性ありパッケージ数 - 1つ以上の脆弱性を持つパッケージの数';
+COMMENT ON COLUMN dashboard_system_view.outdated_packages IS '古いパッケージ数 - 最新バージョンでないパッケージの数';
+
+-- メタデータ
+COMMENT ON COLUMN dashboard_system_view.is_deleted IS '論理削除フラグ - TRUE: 削除済み、FALSE: 有効（部分インデックスで使用）';
+COMMENT ON COLUMN dashboard_system_view.created_at IS '作成日時 - レコード初回作成時のタイムスタンプ';
+COMMENT ON COLUMN dashboard_system_view.updated_at IS '更新日時 - レコード最終更新時のタイムスタンプ（Event Projection時に更新）';
+COMMENT ON COLUMN dashboard_system_view.last_event_applied_at IS '最終イベント適用日時 - Event Sourcing: 最後に適用されたイベントのタイムスタンプ';
+COMMENT ON COLUMN dashboard_system_view.last_event_id IS '最終イベントID - Event Sourcing: 冪等性保証のため、最後に適用されたイベントのUUID';
 ```
 
 ### 2.2 ダッシュボード統計情報マテリアライズドビュー
