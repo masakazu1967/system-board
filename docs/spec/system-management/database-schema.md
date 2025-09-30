@@ -1506,6 +1506,317 @@ async execute(command: RegisterSystemCommand): Promise<SystemId> {
 }
 ```
 
+#### 3.3.6 アプリケーション層でのクリーンアップ処理
+
+**設計決定**: PostgreSQLの`pg_cron`拡張ではなく、**NestJSのスケジューラー**を使用
+
+##### 理由
+
+PostgreSQL `pg_cron`拡張の問題点：
+1. **環境依存**: すべてのPostgreSQL環境で利用可能とは限らない
+2. **監視困難**: データベース側の実行ログをアプリケーション側で把握できない
+3. **テスト困難**: データベース拡張のテストが複雑
+4. **デプロイ制約**: フリー/OSSツールのみの制約に抵触する可能性
+
+##### NestJS Cronスケジューラー実装
+
+```typescript
+// system-cleanup.service.ts
+import { Injectable, Logger } from '@nestjs/common';
+import { Cron, CronExpression } from '@nestjs/schedule';
+import { InjectRepository } from '@nestjs/typeorm';
+import { Repository, LessThan } from 'typeorm';
+import { ProcessedEvent } from './entities/processed-event.entity';
+
+@Injectable()
+export class SystemCleanupService {
+  private readonly logger = new Logger(SystemCleanupService.name);
+
+  constructor(
+    @InjectRepository(ProcessedEvent)
+    private readonly processedEventRepository: Repository<ProcessedEvent>,
+  ) {}
+
+  /**
+   * 古いprocessed_eventsレコードのクリーンアップ
+   *
+   * 実行頻度: 毎日午前3時（サーバー時間）
+   * 保持期間: 90日間
+   */
+  @Cron('0 3 * * *', {
+    name: 'cleanup-processed-events',
+    timeZone: 'Asia/Tokyo',
+  })
+  async cleanupProcessedEvents(): Promise<void> {
+    const retentionDays = 90;
+    const cutoffDate = new Date();
+    cutoffDate.setDate(cutoffDate.getDate() - retentionDays);
+
+    this.logger.log(`Starting cleanup of processed_events older than ${cutoffDate.toISOString()}`);
+
+    try {
+      const result = await this.processedEventRepository.delete({
+        processed_at: LessThan(cutoffDate),
+      });
+
+      this.logger.log(`Cleanup completed: ${result.affected || 0} records deleted`);
+
+      // メトリクス記録
+      await this.recordMetric('processed_events_cleanup', {
+        deleted_count: result.affected || 0,
+        cutoff_date: cutoffDate.toISOString(),
+      });
+
+    } catch (error) {
+      this.logger.error('Failed to cleanup processed_events', error.stack);
+
+      // アラート送信
+      await this.sendAlert('CLEANUP_FAILED', {
+        service: 'processed_events_cleanup',
+        error: error.message,
+      });
+
+      throw error;
+    }
+  }
+
+  /**
+   * 古いsystem_host_historyレコードのアーカイブ
+   *
+   * 実行頻度: 毎月1日午前2時
+   * アーカイブ期間: 2年以上前の履歴レコード
+   */
+  @Cron('0 2 1 * *', {
+    name: 'archive-old-host-history',
+    timeZone: 'Asia/Tokyo',
+  })
+  async archiveOldHostHistory(): Promise<void> {
+    const archiveYears = 2;
+    const cutoffDate = new Date();
+    cutoffDate.setFullYear(cutoffDate.getFullYear() - archiveYears);
+
+    this.logger.log(`Starting archive of host_history older than ${cutoffDate.toISOString()}`);
+
+    try {
+      // 注: 実際のアーカイブ処理では、削除ではなく別テーブルへの移動を推奨
+      const query = `
+        WITH archived_records AS (
+          DELETE FROM system_host_history
+          WHERE effective_to < $1
+          RETURNING *
+        )
+        INSERT INTO system_host_history_archive
+        SELECT * FROM archived_records
+      `;
+
+      const result = await this.processedEventRepository.query(query, [cutoffDate]);
+
+      this.logger.log(`Archive completed: ${result.length || 0} records archived`);
+
+      // メトリクス記録
+      await this.recordMetric('host_history_archive', {
+        archived_count: result.length || 0,
+        cutoff_date: cutoffDate.toISOString(),
+      });
+
+    } catch (error) {
+      this.logger.error('Failed to archive host_history', error.stack);
+
+      // アラート送信
+      await this.sendAlert('ARCHIVE_FAILED', {
+        service: 'host_history_archive',
+        error: error.message,
+      });
+
+      throw error;
+    }
+  }
+
+  /**
+   * Redis期限切れキーの検証とクリーンアップ
+   *
+   * 実行頻度: 1時間ごと
+   *
+   * Redis自体がTTLで自動削除するが、念のため定期的に検証
+   */
+  @Cron(CronExpression.EVERY_HOUR, {
+    name: 'verify-redis-reservations',
+  })
+  async verifyRedisReservations(): Promise<void> {
+    this.logger.debug('Starting Redis reservation verification');
+
+    try {
+      // Redis内の期限切れ予約キーをスキャン
+      const pattern = 'system:name:reservation:*';
+      const keys = await this.redis.keys(pattern);
+
+      let expiredCount = 0;
+
+      for (const key of keys) {
+        const ttl = await this.redis.ttl(key);
+
+        // TTLが設定されていない（-1）場合は異常
+        if (ttl === -1) {
+          this.logger.warn(`Found reservation without TTL: ${key}`);
+
+          // 60秒のTTLを再設定
+          await this.redis.expire(key, 60);
+          expiredCount++;
+        }
+      }
+
+      if (expiredCount > 0) {
+        this.logger.warn(`Fixed ${expiredCount} reservations without TTL`);
+      } else {
+        this.logger.debug('All Redis reservations are valid');
+      }
+
+      // メトリクス記録
+      await this.recordMetric('redis_reservation_verification', {
+        total_keys: keys.length,
+        fixed_keys: expiredCount,
+      });
+
+    } catch (error) {
+      this.logger.error('Failed to verify Redis reservations', error.stack);
+      // エラーは記録するが処理は継続（クリティカルではない）
+    }
+  }
+
+  /**
+   * メトリクス記録（Prometheus等）
+   */
+  private async recordMetric(metricName: string, data: Record<string, any>): Promise<void> {
+    // Prometheusメトリクス記録の実装
+    // 例: this.metricsService.recordCounter(metricName, data);
+  }
+
+  /**
+   * アラート送信（Microsoft Teams）
+   */
+  private async sendAlert(alertType: string, details: Record<string, any>): Promise<void> {
+    // Microsoft Teamsへのアラート送信実装
+    // 例: await this.teamsClient.sendAlert({ type: alertType, ...details });
+  }
+}
+```
+
+##### Cronスケジュール設定
+
+```typescript
+// system-management.module.ts
+import { Module } from '@nestjs/common';
+import { ScheduleModule } from '@nestjs/schedule';
+import { SystemCleanupService } from './services/system-cleanup.service';
+
+@Module({
+  imports: [
+    ScheduleModule.forRoot(), // Cronスケジューラーを有効化
+    TypeOrmModule.forFeature([ProcessedEvent, SystemHostHistory]),
+  ],
+  providers: [
+    SystemCleanupService,
+    // 他のサービス...
+  ],
+})
+export class SystemManagementModule {}
+```
+
+##### クリーンアップ設定
+
+```yaml
+# config/cleanup.yaml
+cleanup:
+  processed_events:
+    schedule: '0 3 * * *'  # 毎日午前3時
+    retention_days: 90     # 90日間保持
+
+  host_history:
+    schedule: '0 2 1 * *'  # 毎月1日午前2時
+    archive_years: 2       # 2年以上前をアーカイブ
+
+  redis_verification:
+    schedule: '0 * * * *'  # 1時間ごと
+    enabled: true
+```
+
+##### モニタリング・アラート
+
+```typescript
+// システムクリーンアップのメトリクス
+interface CleanupMetrics {
+  // processed_events クリーンアップ
+  processed_events_deleted: Counter;
+  processed_events_cleanup_duration: Histogram;
+  processed_events_cleanup_errors: Counter;
+
+  // host_history アーカイブ
+  host_history_archived: Counter;
+  host_history_archive_duration: Histogram;
+  host_history_archive_errors: Counter;
+
+  // Redis検証
+  redis_reservations_verified: Counter;
+  redis_reservations_fixed: Counter;
+}
+```
+
+**Microsoft Teamsアラート例**:
+```json
+{
+  "title": "🧹 System Cleanup Failed",
+  "message": "processed_events cleanup failed",
+  "severity": "warning",
+  "details": {
+    "service": "processed_events_cleanup",
+    "error": "Connection timeout",
+    "timestamp": "2025-09-30T03:00:00Z"
+  }
+}
+```
+
+##### 手動実行コマンド（管理用）
+
+```typescript
+// CLI管理コマンド
+import { Command, CommandRunner } from 'nest-commander';
+
+@Command({
+  name: 'cleanup:processed-events',
+  description: 'Manually trigger processed_events cleanup',
+})
+export class CleanupProcessedEventsCommand extends CommandRunner {
+  constructor(private readonly cleanupService: SystemCleanupService) {
+    super();
+  }
+
+  async run(): Promise<void> {
+    await this.cleanupService.cleanupProcessedEvents();
+  }
+}
+```
+
+**実行例**:
+```bash
+# 手動クリーンアップ実行
+npm run cli cleanup:processed-events
+
+# クリーンアップ状況確認
+npm run cli cleanup:status
+```
+
+##### 利点のまとめ
+
+| 側面 | PostgreSQL pg_cron | NestJS Cron（推奨） |
+|------|-------------------|---------------------|
+| **環境依存性** | ❌ 拡張が必要 | ✅ Node.js標準 |
+| **監視・ログ** | ❌ 困難 | ✅ アプリケーションログで一元管理 |
+| **アラート** | ❌ 別途実装必要 | ✅ 既存のアラート機構を使用可能 |
+| **テスト** | ❌ 複雑 | ✅ ユニットテスト容易 |
+| **設定変更** | ❌ DB再起動必要 | ✅ アプリ再起動のみ |
+| **メトリクス** | ❌ 収集困難 | ✅ Prometheus連携容易 |
+| **デバッグ** | ❌ 困難 | ✅ IDE・ログで容易 |
+
 ### 3.4 EventStore DB プロジェクション設定
 
 ```javascript
