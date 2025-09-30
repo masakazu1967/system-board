@@ -1462,9 +1462,1181 @@ const BREAKPOINTS = {
 </Modal>
 ```
 
-## 8. アクセシビリティ
+## 8. セキュリティ設計
 
-### 8.1 キーボードナビゲーション
+### 9.1 設計方針
+
+製造業向けセキュリティリスク管理システムとして、**情報漏洩防止を最優先**とし、ISO 27001、NIST Cybersecurity Framework準拠を実現します。
+
+#### セキュリティ要件
+
+1. **機密性**: ユーザーのクリアランスレベルに応じたデータアクセス制御
+2. **完全性**: 監査証跡の記録と改ざん防止
+3. **可用性**: 認証失敗時の適切なフォールバック
+4. **説明責任**: すべてのユーザーアクションを監査ログに記録
+
+### 9.2 RBAC (Role-Based Access Control) 設計
+
+#### 8.2.1 ロール定義
+
+| ロールID | ロール名 | 説明 | 対象ユーザー |
+|---------|---------|------|-------------|
+| `ROLE_ADMIN` | システム管理者 | 全機能へのフルアクセス | ITインフラ管理者 |
+| `ROLE_SECURITY_MANAGER` | セキュリティマネージャー | 脆弱性・EOL情報の閲覧・管理 | セキュリティチーム責任者 |
+| `ROLE_SECURITY_ANALYST` | セキュリティアナリスト | 脆弱性・EOL情報の閲覧 | セキュリティ担当者 |
+| `ROLE_SYSTEM_OPERATOR` | システムオペレーター | システム情報の閲覧とタスク管理 | 運用担当者 |
+| `ROLE_VIEWER` | 閲覧者 | 限定された情報の閲覧のみ | 関係者、監査人 |
+
+#### 8.2.2 権限マトリクス
+
+| 機能 | Admin | Security Manager | Security Analyst | System Operator | Viewer |
+|-----|-------|------------------|------------------|-----------------|--------|
+| **ダッシュボード閲覧** | ✅ | ✅ | ✅ | ✅ | ✅ (制限付き) |
+| **統計サマリーカード** | | | | | |
+| - 総システム数 | ✅ | ✅ | ✅ | ✅ | ✅ |
+| - 脆弱性統計 | ✅ | ✅ | ✅ | ❌ | ❌ |
+| - EOL警告統計 | ✅ | ✅ | ✅ | ✅ | ❌ |
+| - タスク統計 | ✅ | ✅ | ✅ | ✅ | ❌ |
+| **システム一覧** | | | | | |
+| - システム基本情報 | ✅ | ✅ | ✅ | ✅ | ✅ (PUBLIC のみ) |
+| - 脆弱性詳細 (CVE ID) | ✅ | ✅ | ✅ | ❌ | ❌ |
+| - CVSS スコア | ✅ | ✅ | ✅ | ❌ | ❌ |
+| - EOL 詳細 | ✅ | ✅ | ✅ | ✅ | ❌ |
+| - タスク情報 | ✅ | ✅ | ✅ | ✅ | ❌ |
+| **フィルタリング・ソート** | ✅ | ✅ | ✅ | ✅ | ✅ (制限付き) |
+| **システム詳細閲覧** | ✅ | ✅ | ✅ | ✅ | ❌ |
+| **データエクスポート** | ✅ | ✅ | ❌ | ❌ | ❌ |
+| **リアルタイム更新** | ✅ | ✅ | ✅ | ✅ | ❌ |
+
+#### 8.2.3 UI制御ロジック
+
+```typescript
+/**
+ * ロールベースのUI要素表示制御
+ */
+interface UserRole {
+  id: string;
+  name: string;
+  permissions: Permission[];
+}
+
+interface Permission {
+  resource: string;    // 例: 'dashboard.vulnerabilities'
+  action: 'read' | 'write' | 'delete';
+  conditions?: Record<string, any>; // 条件付きアクセス
+}
+
+class RBACService {
+  /**
+   * ユーザーが指定リソースへのアクセス権を持つか確認
+   */
+  canAccess(user: User, resource: string, action: string): boolean {
+    return user.roles.some(role =>
+      role.permissions.some(permission =>
+        permission.resource === resource &&
+        permission.action === action &&
+        this.evaluateConditions(permission.conditions, user)
+      )
+    );
+  }
+
+  /**
+   * 条件付きアクセス制御の評価
+   */
+  private evaluateConditions(
+    conditions: Record<string, any> | undefined,
+    user: User
+  ): boolean {
+    if (!conditions) return true;
+
+    // セキュリティ分類レベルのチェック
+    if (conditions.maxSecurityLevel) {
+      return user.clearanceLevel >= conditions.maxSecurityLevel;
+    }
+
+    return true;
+  }
+}
+
+/**
+ * React コンポーネントでの使用例
+ */
+function DashboardSummaryCards({ user }: { user: User }) {
+  const rbac = useRBAC();
+
+  return (
+    <div className="grid grid-cols-4 gap-6">
+      {/* すべてのロールに表示 */}
+      <SummaryCard title="総システム数" value={stats.totalSystems} />
+
+      {/* ROLE_SECURITY_ANALYST 以上に表示 */}
+      {rbac.canAccess(user, 'dashboard.vulnerabilities', 'read') && (
+        <SummaryCard
+          title="脆弱性統計"
+          value={stats.totalVulnerabilities}
+          critical={stats.criticalVulnerabilities}
+        />
+      )}
+
+      {/* ROLE_SYSTEM_OPERATOR 以上に表示 */}
+      {rbac.canAccess(user, 'dashboard.eol', 'read') && (
+        <SummaryCard title="EOL警告" value={stats.systemsWithEOLWarnings} />
+      )}
+
+      {/* ROLE_SYSTEM_OPERATOR 以上に表示 */}
+      {rbac.canAccess(user, 'dashboard.tasks', 'read') && (
+        <SummaryCard title="タスク統計" value={stats.totalOpenTasks} />
+      )}
+    </div>
+  );
+}
+
+/**
+ * テーブル行でのロール別情報開示制御
+ */
+function SystemTableRow({ system, user }: { system: SystemSummary; user: User }) {
+  const rbac = useRBAC();
+
+  return (
+    <tr>
+      <td>{system.systemName}</td>
+      <td>{system.systemType}</td>
+
+      {/* 脆弱性情報: ROLE_SECURITY_ANALYST 以上 */}
+      {rbac.canAccess(user, 'dashboard.vulnerabilities', 'read') ? (
+        <td>
+          <VulnerabilityBadge count={system.vulnerabilityCount} />
+        </td>
+      ) : (
+        <td>
+          <span className="text-gray-400">非表示</span>
+        </td>
+      )}
+
+      {/* CVSS スコア: ROLE_SECURITY_ANALYST 以上 */}
+      {rbac.canAccess(user, 'dashboard.vulnerabilities', 'read') ? (
+        <td>
+          <CVSSScoreBadge score={system.maxCVSSScore} />
+        </td>
+      ) : (
+        <td>
+          <span className="text-gray-400">N/A</span>
+        </td>
+      )}
+    </tr>
+  );
+}
+```
+
+### 9.3 セキュリティ分類制御
+
+#### 8.3.1 セキュリティ分類レベル
+
+| 分類レベル | コード | 説明 | 表示制御 |
+|-----------|--------|------|----------|
+| 最高機密 | `TOP_SECRET` | 組織の中核機密情報 | クリアランスレベル 4 以上 |
+| 機密 | `SECRET` | 重要な機密情報 | クリアランスレベル 3 以上 |
+| 社外秘 | `CONFIDENTIAL` | 社内限定情報 | クリアランスレベル 2 以上 |
+| 公開 | `PUBLIC` | 一般公開可能情報 | 全ユーザー |
+
+#### 8.3.2 ユーザークリアランスレベル
+
+| クリアランスレベル | 対象ロール | アクセス可能な分類 |
+|------------------|-----------|-------------------|
+| Level 4 | ROLE_ADMIN | TOP_SECRET, SECRET, CONFIDENTIAL, PUBLIC |
+| Level 3 | ROLE_SECURITY_MANAGER | SECRET, CONFIDENTIAL, PUBLIC |
+| Level 2 | ROLE_SECURITY_ANALYST, ROLE_SYSTEM_OPERATOR | CONFIDENTIAL, PUBLIC |
+| Level 1 | ROLE_VIEWER | PUBLIC のみ |
+
+#### 8.3.3 データフィルタリングロジック
+
+```typescript
+/**
+ * セキュリティ分類に基づくデータフィルタリング
+ */
+interface SecurityClassification {
+  level: 'TOP_SECRET' | 'SECRET' | 'CONFIDENTIAL' | 'PUBLIC';
+  clearanceRequired: number; // 1-4
+}
+
+interface User {
+  id: string;
+  clearanceLevel: number; // 1-4
+  roles: UserRole[];
+}
+
+class SecurityClassificationService {
+  /**
+   * ユーザーのクリアランスレベルに基づいてシステムをフィルタリング
+   */
+  filterBySecurityClassification(
+    systems: SystemSummary[],
+    user: User
+  ): SystemSummary[] {
+    return systems.filter(system => {
+      const requiredLevel = this.getRequiredClearanceLevel(
+        system.securityClassification
+      );
+      return user.clearanceLevel >= requiredLevel;
+    });
+  }
+
+  /**
+   * セキュリティ分類から必要なクリアランスレベルを取得
+   */
+  private getRequiredClearanceLevel(
+    classification: SecurityClassification['level']
+  ): number {
+    const levelMap: Record<SecurityClassification['level'], number> = {
+      TOP_SECRET: 4,
+      SECRET: 3,
+      CONFIDENTIAL: 2,
+      PUBLIC: 1,
+    };
+    return levelMap[classification];
+  }
+
+  /**
+   * システムがユーザーに表示可能か判定
+   */
+  canViewSystem(system: SystemSummary, user: User): boolean {
+    const requiredLevel = this.getRequiredClearanceLevel(
+      system.securityClassification
+    );
+    return user.clearanceLevel >= requiredLevel;
+  }
+}
+
+/**
+ * React コンポーネントでの使用例
+ */
+function DashboardSystemTable({ systems, user }: Props) {
+  const securityService = useSecurityClassification();
+
+  // クリアランスレベルでフィルタリング
+  const visibleSystems = useMemo(
+    () => securityService.filterBySecurityClassification(systems, user),
+    [systems, user]
+  );
+
+  return (
+    <Table>
+      <TableHeader>
+        <TableRow>
+          <TableHead>システム名</TableHead>
+          <TableHead>セキュリティ分類</TableHead>
+          <TableHead>ステータス</TableHead>
+        </TableRow>
+      </TableHeader>
+      <TableBody>
+        {visibleSystems.map(system => (
+          <TableRow key={system.systemId}>
+            <TableCell>{system.systemName}</TableCell>
+            <TableCell>
+              <SecurityClassificationBadge
+                level={system.securityClassification}
+              />
+            </TableCell>
+            <TableCell>
+              <StatusBadge status={system.status} />
+            </TableCell>
+          </TableRow>
+        ))}
+      </TableBody>
+    </Table>
+  );
+}
+```
+
+#### 8.3.4 セキュリティ分類バッジの視覚的デザイン
+
+```typescript
+/**
+ * セキュリティ分類バッジコンポーネント
+ */
+interface SecurityClassificationBadgeProps {
+  level: 'TOP_SECRET' | 'SECRET' | 'CONFIDENTIAL' | 'PUBLIC';
+  size?: 'sm' | 'md' | 'lg';
+}
+
+function SecurityClassificationBadge({
+  level,
+  size = 'md',
+}: SecurityClassificationBadgeProps) {
+  const config = {
+    TOP_SECRET: {
+      label: '最高機密',
+      icon: <ShieldExclamationIcon />,
+      bgColor: 'bg-red-100',
+      textColor: 'text-red-800',
+      borderColor: 'border-red-300',
+    },
+    SECRET: {
+      label: '機密',
+      icon: <ShieldCheckIcon />,
+      bgColor: 'bg-orange-100',
+      textColor: 'text-orange-800',
+      borderColor: 'border-orange-300',
+    },
+    CONFIDENTIAL: {
+      label: '社外秘',
+      icon: <LockClosedIcon />,
+      bgColor: 'bg-yellow-100',
+      textColor: 'text-yellow-800',
+      borderColor: 'border-yellow-300',
+    },
+    PUBLIC: {
+      label: '公開',
+      icon: <GlobeAltIcon />,
+      bgColor: 'bg-gray-100',
+      textColor: 'text-gray-800',
+      borderColor: 'border-gray-300',
+    },
+  };
+
+  const { label, icon, bgColor, textColor, borderColor } = config[level];
+
+  return (
+    <span
+      className={`
+        inline-flex items-center gap-1 px-2 py-1 rounded-md border
+        ${bgColor} ${textColor} ${borderColor}
+        font-medium text-${size === 'sm' ? 'xs' : size === 'lg' ? 'base' : 'sm'}
+      `}
+      aria-label={`セキュリティ分類: ${label}`}
+    >
+      {icon}
+      {label}
+    </span>
+  );
+}
+```
+
+### 9.4 認証・認可UI設計
+
+#### 8.4.1 セッション管理
+
+```typescript
+/**
+ * セッションタイムアウト管理
+ */
+interface SessionConfig {
+  timeoutMinutes: number; // 例: 30分
+  warningMinutes: number; // 例: 5分前に警告
+}
+
+class SessionManager {
+  private sessionTimeout: number;
+  private warningTimeout: number;
+  private lastActivity: Date;
+
+  constructor(config: SessionConfig) {
+    this.sessionTimeout = config.timeoutMinutes * 60 * 1000;
+    this.warningTimeout = config.warningMinutes * 60 * 1000;
+    this.lastActivity = new Date();
+    this.startMonitoring();
+  }
+
+  /**
+   * ユーザーアクティビティを記録
+   */
+  recordActivity(): void {
+    this.lastActivity = new Date();
+  }
+
+  /**
+   * セッション監視の開始
+   */
+  private startMonitoring(): void {
+    // 警告タイムアウト
+    setTimeout(() => {
+      this.showSessionWarning();
+    }, this.sessionTimeout - this.warningTimeout);
+
+    // セッションタイムアウト
+    setTimeout(() => {
+      this.handleSessionTimeout();
+    }, this.sessionTimeout);
+  }
+
+  /**
+   * セッションタイムアウト警告の表示
+   */
+  private showSessionWarning(): void {
+    // モーダル表示（次のセクションで詳細）
+    const remainingMinutes = this.warningTimeout / 60 / 1000;
+    showModal({
+      type: 'warning',
+      title: 'セッションタイムアウト警告',
+      message: `${remainingMinutes}分後にセッションが切れます。操作を続けますか？`,
+      actions: [
+        { label: '継続', onClick: () => this.extendSession() },
+        { label: 'ログアウト', onClick: () => this.logout() },
+      ],
+    });
+  }
+
+  /**
+   * セッションの延長
+   */
+  private extendSession(): void {
+    // APIを呼び出してセッションを延長
+    api.post('/auth/extend-session').then(() => {
+      this.lastActivity = new Date();
+      this.startMonitoring(); // タイマーリセット
+    });
+  }
+
+  /**
+   * セッションタイムアウト処理
+   */
+  private handleSessionTimeout(): void {
+    showModal({
+      type: 'error',
+      title: 'セッションタイムアウト',
+      message: 'セッションが切れました。再度ログインしてください。',
+      actions: [{ label: 'ログイン画面へ', onClick: () => this.logout() }],
+    });
+  }
+
+  /**
+   * ログアウト処理
+   */
+  private logout(): void {
+    // セッションクリアとログイン画面へリダイレクト
+    sessionStorage.clear();
+    window.location.href = '/login';
+  }
+}
+
+/**
+ * 自動リフレッシュ時のセッション検証
+ */
+async function refreshDashboardData(): Promise<void> {
+  try {
+    // セッション有効性チェック
+    const sessionValid = await api.get('/auth/validate-session');
+
+    if (!sessionValid) {
+      sessionManager.handleSessionTimeout();
+      return;
+    }
+
+    // データ取得
+    const data = await api.get('/dashboard/data');
+    updateDashboard(data);
+
+    // アクティビティ記録
+    sessionManager.recordActivity();
+  } catch (error) {
+    if (error.response?.status === 401) {
+      // 認証エラー: セッション切れ
+      sessionManager.handleSessionTimeout();
+    } else {
+      // その他のエラー
+      handleError(error);
+    }
+  }
+}
+
+// 30秒ごとの自動リフレッシュ（セッション検証付き）
+setInterval(refreshDashboardData, 30000);
+```
+
+#### 8.4.2 セッションタイムアウト警告UI
+
+```typescript
+/**
+ * セッションタイムアウト警告モーダル
+ */
+function SessionTimeoutWarningModal({
+  remainingSeconds,
+  onExtend,
+  onLogout,
+}: {
+  remainingSeconds: number;
+  onExtend: () => void;
+  onLogout: () => void;
+}) {
+  const [countdown, setCountdown] = useState(remainingSeconds);
+
+  useEffect(() => {
+    const timer = setInterval(() => {
+      setCountdown(prev => {
+        if (prev <= 1) {
+          clearInterval(timer);
+          onLogout();
+          return 0;
+        }
+        return prev - 1;
+      });
+    }, 1000);
+
+    return () => clearInterval(timer);
+  }, [onLogout]);
+
+  const minutes = Math.floor(countdown / 60);
+  const seconds = countdown % 60;
+
+  return (
+    <Modal open={true} onClose={onExtend}>
+      <ModalContent>
+        <div className="flex items-center gap-3 mb-4">
+          <ClockIcon className="w-8 h-8 text-yellow-600" />
+          <ModalTitle>セッションタイムアウト警告</ModalTitle>
+        </div>
+
+        <ModalBody>
+          <p className="text-gray-700">
+            <strong className="text-2xl text-yellow-600">
+              {minutes}:{seconds.toString().padStart(2, '0')}
+            </strong>{' '}
+            後にセッションが切れます。
+          </p>
+          <p className="mt-2 text-sm text-gray-600">
+            操作を続ける場合は「継続」ボタンをクリックしてください。
+          </p>
+        </ModalBody>
+
+        <ModalFooter>
+          <Button variant="secondary" onClick={onLogout}>
+            ログアウト
+          </Button>
+          <Button variant="primary" onClick={onExtend}>
+            継続する
+          </Button>
+        </ModalFooter>
+      </ModalContent>
+    </Modal>
+  );
+}
+```
+
+#### 8.4.3 再認証フロー
+
+```typescript
+/**
+ * 機密操作時の再認証要求
+ */
+interface ReauthenticationRequirement {
+  action: string; // 例: 'export_data', 'view_top_secret_system'
+  requiresReauth: boolean;
+  message: string;
+}
+
+const REAUTH_REQUIRED_ACTIONS: ReauthenticationRequirement[] = [
+  {
+    action: 'export_data',
+    requiresReauth: true,
+    message: 'データエクスポートには再認証が必要です。',
+  },
+  {
+    action: 'view_top_secret_system',
+    requiresReauth: true,
+    message: '最高機密システムの閲覧には再認証が必要です。',
+  },
+];
+
+async function performSensitiveAction(
+  action: string,
+  callback: () => Promise<void>
+): Promise<void> {
+  const requirement = REAUTH_REQUIRED_ACTIONS.find(r => r.action === action);
+
+  if (requirement?.requiresReauth) {
+    // 再認証モーダル表示
+    const reauthResult = await showReauthenticationModal(requirement.message);
+
+    if (reauthResult.success) {
+      // 再認証成功: アクション実行
+      await callback();
+    } else {
+      // 再認証失敗
+      showError('認証に失敗しました。もう一度お試しください。');
+    }
+  } else {
+    // 再認証不要: 直接実行
+    await callback();
+  }
+}
+
+/**
+ * 再認証モーダルコンポーネント
+ */
+function ReauthenticationModal({
+  message,
+  onSubmit,
+  onCancel,
+}: {
+  message: string;
+  onSubmit: (password: string) => Promise<boolean>;
+  onCancel: () => void;
+}) {
+  const [password, setPassword] = useState('');
+  const [error, setError] = useState('');
+  const [loading, setLoading] = useState(false);
+
+  const handleSubmit = async (e: React.FormEvent) => {
+    e.preventDefault();
+    setLoading(true);
+    setError('');
+
+    const success = await onSubmit(password);
+
+    if (!success) {
+      setError('パスワードが正しくありません。');
+      setPassword('');
+    }
+
+    setLoading(false);
+  };
+
+  return (
+    <Modal open={true} onClose={onCancel}>
+      <ModalContent>
+        <div className="flex items-center gap-3 mb-4">
+          <ShieldCheckIcon className="w-8 h-8 text-blue-600" />
+          <ModalTitle>再認証が必要です</ModalTitle>
+        </div>
+
+        <ModalBody>
+          <p className="text-gray-700 mb-4">{message}</p>
+
+          <form onSubmit={handleSubmit}>
+            <label htmlFor="reauth-password" className="block text-sm font-medium mb-2">
+              パスワード
+            </label>
+            <input
+              type="password"
+              id="reauth-password"
+              value={password}
+              onChange={e => setPassword(e.target.value)}
+              className="w-full px-3 py-2 border border-gray-300 rounded-md"
+              required
+              autoFocus
+            />
+
+            {error && (
+              <p className="mt-2 text-sm text-red-600" role="alert">
+                {error}
+              </p>
+            )}
+          </form>
+        </ModalBody>
+
+        <ModalFooter>
+          <Button variant="secondary" onClick={onCancel} disabled={loading}>
+            キャンセル
+          </Button>
+          <Button
+            variant="primary"
+            onClick={handleSubmit}
+            disabled={loading || !password}
+          >
+            {loading ? '認証中...' : '認証する'}
+          </Button>
+        </ModalFooter>
+      </ModalContent>
+    </Modal>
+  );
+}
+```
+
+### 9.5 監査ログ設計
+
+#### 8.5.1 監査ログ対象操作
+
+| 操作カテゴリ | 操作 | ログレベル | 記録内容 |
+|-------------|------|-----------|---------|
+| **認証** | ログイン成功 | INFO | ユーザーID、IPアドレス、タイムスタンプ |
+| | ログイン失敗 | WARNING | ユーザーID、IPアドレス、失敗理由 |
+| | ログアウト | INFO | ユーザーID、セッション時間 |
+| | セッション延長 | INFO | ユーザーID、延長回数 |
+| | セッションタイムアウト | INFO | ユーザーID、タイムアウト時刻 |
+| **ダッシュボード** | ダッシュボード閲覧 | INFO | ユーザーID、閲覧時刻 |
+| | フィルター適用 | INFO | ユーザーID、フィルター条件 |
+| | ソート適用 | INFO | ユーザーID、ソート条件 |
+| | データエクスポート | WARNING | ユーザーID、エクスポート件数、形式 |
+| **システム詳細** | システム詳細閲覧 | INFO | ユーザーID、システムID、セキュリティ分類 |
+| | TOP_SECRET閲覧 | WARNING | ユーザーID、システムID、クリアランスレベル |
+| | 脆弱性詳細閲覧 | INFO | ユーザーID、CVE ID、システムID |
+| **不正アクセス** | 権限不足アクセス | WARNING | ユーザーID、要求リソース、ロール |
+| | クリアランス不足 | WARNING | ユーザーID、要求分類、クリアランスレベル |
+| | 無効なセッション | ERROR | ユーザーID、アクセス試行時刻 |
+
+#### 8.5.2 監査ログフォーマット
+
+```typescript
+/**
+ * 監査ログエントリ
+ */
+interface AuditLogEntry {
+  id: string; // UUID
+  timestamp: Date;
+  userId: string;
+  userRole: string[];
+  action: string; // 例: 'dashboard.view', 'system.export'
+  resource: string; // 例: 'system:abc-123'
+  result: 'success' | 'failure' | 'denied';
+  ipAddress: string;
+  userAgent: string;
+  sessionId: string;
+  details?: Record<string, any>; // 追加情報
+  securityClassification?: SecurityClassification['level'];
+}
+
+/**
+ * 監査ログ記録サービス
+ */
+class AuditLogService {
+  /**
+   * 監査ログを記録
+   */
+  async log(entry: Omit<AuditLogEntry, 'id' | 'timestamp'>): Promise<void> {
+    const logEntry: AuditLogEntry = {
+      id: generateUUID(),
+      timestamp: new Date(),
+      ...entry,
+    };
+
+    // バックエンドAPIに送信
+    await api.post('/audit/log', logEntry);
+
+    // ローカルにも記録（オフライン対応）
+    this.logToLocalStorage(logEntry);
+  }
+
+  /**
+   * ローカルストレージに記録（オフライン対応）
+   */
+  private logToLocalStorage(entry: AuditLogEntry): void {
+    const logs = JSON.parse(localStorage.getItem('audit_logs') || '[]');
+    logs.push(entry);
+
+    // 最大100件まで保持
+    if (logs.length > 100) {
+      logs.shift();
+    }
+
+    localStorage.setItem('audit_logs', JSON.stringify(logs));
+  }
+}
+
+/**
+ * React コンポーネントでの使用例
+ */
+function DashboardPage() {
+  const auditLog = useAuditLog();
+  const user = useUser();
+
+  useEffect(() => {
+    // ダッシュボード閲覧をログ記録
+    auditLog.log({
+      userId: user.id,
+      userRole: user.roles.map(r => r.name),
+      action: 'dashboard.view',
+      resource: 'dashboard',
+      result: 'success',
+      ipAddress: user.ipAddress,
+      userAgent: navigator.userAgent,
+      sessionId: user.sessionId,
+    });
+  }, []);
+
+  return <div>...</div>;
+}
+
+/**
+ * フィルター適用時の監査ログ
+ */
+function handleFilterApply(filters: DashboardFilters) {
+  auditLog.log({
+    userId: user.id,
+    userRole: user.roles.map(r => r.name),
+    action: 'dashboard.filter',
+    resource: 'dashboard',
+    result: 'success',
+    ipAddress: user.ipAddress,
+    userAgent: navigator.userAgent,
+    sessionId: user.sessionId,
+    details: {
+      filters: {
+        status: filters.status,
+        criticality: filters.criticality,
+        hasVulnerabilities: filters.hasVulnerabilities,
+        hasEOLWarnings: filters.hasEOLWarnings,
+      },
+    },
+  });
+
+  // フィルター適用処理
+  applyFilters(filters);
+}
+
+/**
+ * データエクスポート時の監査ログ（WARNING レベル）
+ */
+async function handleDataExport(format: 'csv' | 'json' | 'excel') {
+  // 再認証要求
+  await performSensitiveAction('export_data', async () => {
+    const exportedData = await exportDashboardData(format);
+
+    auditLog.log({
+      userId: user.id,
+      userRole: user.roles.map(r => r.name),
+      action: 'dashboard.export',
+      resource: 'dashboard',
+      result: 'success',
+      ipAddress: user.ipAddress,
+      userAgent: navigator.userAgent,
+      sessionId: user.sessionId,
+      details: {
+        format,
+        recordCount: exportedData.length,
+        exportSize: new Blob([exportedData]).size,
+      },
+    });
+  });
+}
+
+/**
+ * 権限不足時の監査ログ（WARNING レベル）
+ */
+function handleUnauthorizedAccess(resource: string, requiredRole: string) {
+  auditLog.log({
+    userId: user.id,
+    userRole: user.roles.map(r => r.name),
+    action: 'access.denied',
+    resource,
+    result: 'denied',
+    ipAddress: user.ipAddress,
+    userAgent: navigator.userAgent,
+    sessionId: user.sessionId,
+    details: {
+      requiredRole,
+      reason: 'insufficient_permissions',
+    },
+  });
+
+  // ユーザーにエラー表示
+  showError('この操作を実行する権限がありません。');
+}
+```
+
+#### 8.5.3 監査ログ可視化（管理者向け）
+
+```typescript
+/**
+ * 監査ログダッシュボード（管理者専用）
+ * 注: これは別画面として実装される想定
+ */
+interface AuditLogDashboard {
+  // 監査ログ統計
+  stats: {
+    totalLogs: number;
+    failedLogins: number;
+    deniedAccess: number;
+    dataExports: number;
+  };
+
+  // 最近の監査ログ
+  recentLogs: AuditLogEntry[];
+
+  // 異常検知アラート
+  alerts: {
+    suspiciousActivities: number;
+    repeatedFailures: number;
+    unusualAccessPatterns: number;
+  };
+}
+```
+
+### 9.6 XSS対策とセキュリティヘッダー
+
+#### 8.6.1 入力検証・サニタイゼーション
+
+```typescript
+/**
+ * XSS対策: 入力検証・サニタイゼーション
+ */
+import DOMPurify from 'dompurify';
+
+class InputSanitizer {
+  /**
+   * HTML文字列のサニタイズ
+   */
+  sanitizeHTML(input: string): string {
+    return DOMPurify.sanitize(input, {
+      ALLOWED_TAGS: [], // HTMLタグを一切許可しない
+      ALLOWED_ATTR: [],
+    });
+  }
+
+  /**
+   * 検索クエリのサニタイズ
+   */
+  sanitizeSearchQuery(query: string): string {
+    // 特殊文字をエスケープ
+    return query
+      .replace(/[<>'"]/g, '') // HTML特殊文字を削除
+      .replace(/[\\]/g, '') // バックスラッシュを削除
+      .trim()
+      .substring(0, 255); // 最大255文字
+  }
+
+  /**
+   * フィルター値のサニタイズ
+   */
+  sanitizeFilterValue(value: string): string {
+    // ホワイトリスト検証
+    const allowedPattern = /^[a-zA-Z0-9_\-\s]+$/;
+
+    if (!allowedPattern.test(value)) {
+      throw new Error('Invalid filter value');
+    }
+
+    return value.trim();
+  }
+}
+
+/**
+ * React コンポーネントでの使用例
+ */
+function DashboardSearchInput() {
+  const [searchQuery, setSearchQuery] = useState('');
+  const sanitizer = new InputSanitizer();
+
+  const handleSearch = (e: React.FormEvent) => {
+    e.preventDefault();
+
+    // 入力をサニタイズ
+    const sanitizedQuery = sanitizer.sanitizeSearchQuery(searchQuery);
+
+    // サニタイズされたクエリで検索
+    performSearch(sanitizedQuery);
+  };
+
+  return (
+    <form onSubmit={handleSearch}>
+      <input
+        type="text"
+        value={searchQuery}
+        onChange={e => setSearchQuery(e.target.value)}
+        placeholder="システム名で検索..."
+        maxLength={255}
+      />
+      <button type="submit">検索</button>
+    </form>
+  );
+}
+
+/**
+ * システム名の安全な表示（XSS対策）
+ */
+function SystemNameDisplay({ systemName }: { systemName: string }) {
+  const sanitizer = new InputSanitizer();
+
+  // サニタイズして表示
+  const safeName = sanitizer.sanitizeHTML(systemName);
+
+  return (
+    <span className="font-medium text-gray-900">
+      {safeName}
+    </span>
+  );
+}
+```
+
+#### 8.6.2 Content Security Policy (CSP)
+
+```typescript
+/**
+ * Next.js の next.config.js での CSP 設定例
+ */
+const securityHeaders = [
+  {
+    key: 'Content-Security-Policy',
+    value: `
+      default-src 'self';
+      script-src 'self' 'unsafe-eval' 'unsafe-inline';
+      style-src 'self' 'unsafe-inline';
+      img-src 'self' data: https:;
+      font-src 'self' data:;
+      connect-src 'self' https://api.example.com;
+      frame-ancestors 'none';
+      base-uri 'self';
+      form-action 'self';
+    `
+      .replace(/\s{2,}/g, ' ')
+      .trim(),
+  },
+  {
+    key: 'X-Frame-Options',
+    value: 'DENY', // クリックジャッキング対策
+  },
+  {
+    key: 'X-Content-Type-Options',
+    value: 'nosniff', // MIME スニッフィング対策
+  },
+  {
+    key: 'Referrer-Policy',
+    value: 'strict-origin-when-cross-origin',
+  },
+  {
+    key: 'Permissions-Policy',
+    value: 'geolocation=(), microphone=(), camera=()',
+  },
+  {
+    key: 'Strict-Transport-Security',
+    value: 'max-age=31536000; includeSubDomains', // HTTPS強制
+  },
+];
+
+module.exports = {
+  async headers() {
+    return [
+      {
+        source: '/:path*',
+        headers: securityHeaders,
+      },
+    ];
+  },
+};
+```
+
+#### 8.6.3 セキュアクッキー設定
+
+```typescript
+/**
+ * セキュアクッキー設定
+ */
+interface SecureCookieOptions {
+  httpOnly: boolean; // JavaScriptからのアクセス防止
+  secure: boolean; // HTTPS通信のみ
+  sameSite: 'strict' | 'lax' | 'none'; // CSRF対策
+  maxAge: number; // 有効期限（秒）
+}
+
+function setSecureCookie(
+  name: string,
+  value: string,
+  options: SecureCookieOptions = {
+    httpOnly: true,
+    secure: true,
+    sameSite: 'strict',
+    maxAge: 3600, // 1時間
+  }
+): void {
+  document.cookie = `${name}=${value}; HttpOnly=${options.httpOnly}; Secure=${options.secure}; SameSite=${options.sameSite}; Max-Age=${options.maxAge}; Path=/`;
+}
+```
+
+### 9.7 エラーメッセージの情報漏洩対策
+
+```typescript
+/**
+ * セキュアなエラーメッセージ表示
+ */
+interface ErrorMessage {
+  userMessage: string; // ユーザー向けメッセージ
+  internalMessage: string; // 内部ログ用メッセージ（詳細）
+  errorCode: string; // エラーコード
+}
+
+class SecureErrorHandler {
+  /**
+   * エラーメッセージを安全に表示
+   */
+  handleError(error: Error, context: string): ErrorMessage {
+    // 内部詳細ログ（監査ログに記録）
+    const internalMessage = `${context}: ${error.message}\nStack: ${error.stack}`;
+
+    auditLog.log({
+      action: 'error.occurred',
+      resource: context,
+      result: 'failure',
+      details: { internalMessage },
+    });
+
+    // ユーザー向けの一般的なメッセージ
+    const userMessage = this.getUserFriendlyMessage(error);
+
+    return {
+      userMessage,
+      internalMessage,
+      errorCode: this.getErrorCode(error),
+    };
+  }
+
+  /**
+   * ユーザー向けの安全なエラーメッセージ
+   */
+  private getUserFriendlyMessage(error: Error): string {
+    // 詳細なエラー情報を隠蔽
+    if (error.message.includes('SQL') || error.message.includes('database')) {
+      return 'データの取得に失敗しました。しばらく経ってから再度お試しください。';
+    }
+
+    if (error.message.includes('401') || error.message.includes('authentication')) {
+      return '認証に失敗しました。再度ログインしてください。';
+    }
+
+    if (error.message.includes('403') || error.message.includes('authorization')) {
+      return 'この操作を実行する権限がありません。';
+    }
+
+    // デフォルトメッセージ
+    return 'エラーが発生しました。問題が続く場合は管理者にお問い合わせください。';
+  }
+
+  /**
+   * エラーコードの生成
+   */
+  private getErrorCode(error: Error): string {
+    // ランダムなエラーコード（ログと紐づけ可能）
+    return `ERR-${Date.now()}-${Math.random().toString(36).substring(2, 9).toUpperCase()}`;
+  }
+}
+
+/**
+ * エラー表示コンポーネント
+ */
+function ErrorDisplay({ error }: { error: ErrorMessage }) {
+  return (
+    <div className="bg-red-50 border border-red-200 rounded-md p-4">
+      <div className="flex items-center gap-2 mb-2">
+        <ExclamationCircleIcon className="w-5 h-5 text-red-600" />
+        <p className="font-medium text-red-800">エラー</p>
+      </div>
+      <p className="text-sm text-red-700">{error.userMessage}</p>
+      <p className="text-xs text-red-600 mt-2">
+        エラーコード: <code className="font-mono">{error.errorCode}</code>
+      </p>
+    </div>
+  );
+}
+```
+
+### 9.8 OWASP Top 10 対策チェックリスト
+
+| OWASP Top 10 | 脅威 | 対策 | 実装箇所 |
+|-------------|------|------|---------|
+| A01:2021 | Broken Access Control | RBAC実装、セキュリティ分類制御 | 8.2, 8.3 |
+| A02:2021 | Cryptographic Failures | HTTPS強制、セキュアクッキー | 8.6.2, 8.6.3 |
+| A03:2021 | Injection | 入力検証、パラメータ化クエリ | 8.6.1 |
+| A04:2021 | Insecure Design | セキュリティ設計レビュー | このセクション全体 |
+| A05:2021 | Security Misconfiguration | セキュリティヘッダー設定 | 8.6.2 |
+| A06:2021 | Vulnerable Components | 依存関係の定期監査 | バックエンド側 |
+| A07:2021 | Identification and Authentication Failures | セッション管理、再認証 | 8.4 |
+| A08:2021 | Software and Data Integrity Failures | 監査ログ、整合性チェック | 8.5 |
+| A09:2021 | Security Logging and Monitoring Failures | 包括的な監査ログ | 8.5 |
+| A10:2021 | Server-Side Request Forgery (SSRF) | URL検証（該当なし） | - |
+
+---
+
+## 9. アクセシビリティ
+
+### 9.1 キーボードナビゲーション
 
 #### 主要なキーボードショートカット
 
@@ -1523,7 +2695,7 @@ const DashboardTable: React.FC = () => {
 };
 ```
 
-### 8.2 スクリーンリーダー対応
+### 9.2 スクリーンリーダー対応
 
 #### ARIA属性
 
@@ -1594,7 +2766,7 @@ const DashboardTable: React.FC = () => {
 }
 ```
 
-### 8.3 色覚特性への配慮
+### 9.3 色覚特性への配慮
 
 #### 色だけに依存しない表現
 
@@ -1629,7 +2801,7 @@ const COLOR_CONTRAST = {
 };
 ```
 
-### 8.4 フォーカスインジケーター
+### 9.4 フォーカスインジケーター
 
 明確なフォーカス表示:
 
@@ -1652,7 +2824,7 @@ const COLOR_CONTRAST = {
 }
 ```
 
-## 9. パフォーマンス最適化
+## 10. パフォーマンス最適化
 
 ### 9.1 仮想スクロール
 
@@ -1768,7 +2940,7 @@ if (showAdvancedFilters) {
 }
 ```
 
-## 10. 実装チェックリスト
+## 11. 実装チェックリスト
 
 ### フェーズ1: 基本レイアウト
 
@@ -1842,7 +3014,7 @@ if (showAdvancedFilters) {
 - [ ] レスポンシブテスト (全デバイス)
 - [ ] ブラウザ互換性テスト
 
-## 11. デザインシステムとの統合
+## 12. デザインシステムとの統合
 
 ### 11.1 デザイントークン
 
@@ -1959,7 +3131,7 @@ export const Button: React.FC<ButtonProps> = ({
 };
 ```
 
-## 12. 次のステップ
+## 13. 次のステップ
 
 ### Phase 1: フロントエンド実装準備
 
@@ -1988,7 +3160,7 @@ export const Button: React.FC<ButtonProps> = ({
 - [ ] アクセシビリティ監査
 - [ ] 最終調整
 
-## 13. 関連ドキュメント
+## 14. 関連ドキュメント
 
 - [US-SM-006-001: ダッシュボード機能のドメイン設計](./US-SM-006-dashboard-domain-design.md)
 - [US-SM-006-004: ダッシュボードデータベース設計](./US-SM-006-004-dashboard-database-design.md)
