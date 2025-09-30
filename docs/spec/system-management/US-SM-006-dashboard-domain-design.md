@@ -335,12 +335,8 @@ export class ViewDashboardQueryHandler implements IQueryHandler<ViewDashboardQue
     } catch (error) {
       timer({ view_mode: query.viewMode, cache_hit: 'error' });
 
-      // 認可エラーはそのまま再throw
-      if (error instanceof UnauthorizedError) {
-        throw error;
-      }
-
-      // その他のエラーはログ記録してカスタムエラーを投げる
+      // エラーをログ記録してカスタムエラーを投げる
+      // Note: UnauthorizedError は SecurityInterceptor で処理されるため、ここでは発生しない
       this.logger.error('Dashboard query execution failed', {
         queryId: query.queryId,
         userId: query.userId.getValue(),
@@ -461,6 +457,7 @@ export class DashboardController {
 ```
 
 **AOPフロー**:
+
 1. Controller が `ViewDashboardQuery` を作成し、`UserContext` を設定
 2. `queryBus.execute()` が呼ばれる
 3. **SecurityInterceptor** が自動的に介入
