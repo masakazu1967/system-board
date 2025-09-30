@@ -221,7 +221,187 @@ CREATE INDEX idx_processed_events_type ON processed_events(event_type);
 CREATE INDEX idx_processed_events_processed_at ON processed_events(processed_at);
 ```
 
-### 1.6 Read Model Materialized View
+### 1.6 system_host_history テーブル
+
+システムのホスト構成変更履歴を記録するテーブル（時系列追跡）
+
+#### 設計理由
+
+`systems`テーブルにホスト構成を非正規化して保存すると、以下の問題が発生します：
+
+1. **履歴追跡不可**: 過去のスペック情報が失われる
+2. **変更分析困難**: いつ、どのようにスペックが変わったか不明
+3. **コンプライアンス**: 監査要件を満たせない（変更履歴の保持が必要）
+4. **キャパシティプランニング**: リソース使用傾向の分析ができない
+
+#### テーブル定義
+
+```sql
+CREATE TABLE system_host_history (
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    system_id UUID NOT NULL REFERENCES systems(system_id) ON DELETE CASCADE,
+
+    -- ホスト構成情報
+    cpu_cores INTEGER NOT NULL CHECK (cpu_cores >= 1),
+    memory_gb INTEGER NOT NULL CHECK (memory_gb >= 1),
+    storage_gb INTEGER NOT NULL CHECK (storage_gb >= 1),
+    operating_system VARCHAR(100),
+    os_version VARCHAR(50),
+    encryption_enabled BOOLEAN NOT NULL DEFAULT false,
+
+    -- 有効期間（Temporal Table Pattern）
+    effective_from TIMESTAMP WITH TIME ZONE NOT NULL,
+    effective_to TIMESTAMP WITH TIME ZONE,
+
+    -- 変更追跡
+    changed_by VARCHAR(255),
+    change_reason TEXT,
+
+    -- 制約
+    CHECK (effective_to IS NULL OR effective_to > effective_from),
+
+    -- 同一システムで有効期間が重複しないことを保証
+    EXCLUDE USING gist (
+        system_id WITH =,
+        tstzrange(effective_from, effective_to, '[)') WITH &&
+    )
+);
+
+-- インデックス
+CREATE INDEX idx_system_host_history_system_id ON system_host_history(system_id, effective_from DESC);
+CREATE INDEX idx_system_host_history_current ON system_host_history(system_id) WHERE effective_to IS NULL;
+CREATE INDEX idx_system_host_history_effective_range ON system_host_history USING gist(tstzrange(effective_from, effective_to, '[)'));
+CREATE INDEX idx_system_host_history_changed_by ON system_host_history(changed_by);
+```
+
+#### 使用例
+
+**1. 現在の構成を取得**
+
+```sql
+SELECT
+    cpu_cores,
+    memory_gb,
+    storage_gb,
+    operating_system,
+    os_version,
+    encryption_enabled
+FROM system_host_history
+WHERE system_id = '550e8400-e29b-41d4-a716-446655440000'
+  AND effective_to IS NULL;
+```
+
+**2. 特定時点の構成を取得**
+
+```sql
+SELECT
+    cpu_cores,
+    memory_gb,
+    storage_gb,
+    operating_system,
+    os_version
+FROM system_host_history
+WHERE system_id = '550e8400-e29b-41d4-a716-446655440000'
+  AND effective_from <= '2025-06-01T00:00:00Z'
+  AND (effective_to IS NULL OR effective_to > '2025-06-01T00:00:00Z');
+```
+
+**3. 構成変更履歴を取得**
+
+```sql
+SELECT
+    effective_from,
+    effective_to,
+    cpu_cores,
+    memory_gb,
+    storage_gb,
+    changed_by,
+    change_reason
+FROM system_host_history
+WHERE system_id = '550e8400-e29b-41d4-a716-446655440000'
+ORDER BY effective_from DESC;
+```
+
+**4. スペック増強の傾向分析**
+
+```sql
+SELECT
+    date_trunc('month', effective_from) as month,
+    AVG(cpu_cores) as avg_cpu,
+    AVG(memory_gb) as avg_memory,
+    COUNT(*) as config_changes
+FROM system_host_history
+WHERE effective_from >= NOW() - INTERVAL '1 year'
+GROUP BY date_trunc('month', effective_from)
+ORDER BY month;
+```
+
+#### イベントハンドラーとの連携
+
+```typescript
+// SystemConfigurationUpdated イベントハンドラー
+@EventsHandler(SystemConfigurationUpdated)
+export class SystemConfigurationUpdatedHandler {
+  async handle(event: SystemConfigurationUpdated): Promise<void> {
+    const { systemId, newConfiguration, previousConfiguration } = event.data;
+
+    // 1. 現在の履歴レコードを閉じる（effective_toを設定）
+    await this.hostHistoryRepository.closeCurrentRecord(
+      systemId,
+      event.occurredAt
+    );
+
+    // 2. 新しい履歴レコードを作成
+    await this.hostHistoryRepository.create({
+      systemId: systemId,
+      cpuCores: newConfiguration.host.cpuCores,
+      memoryGb: newConfiguration.host.memoryGb,
+      storageGb: newConfiguration.host.storageGb,
+      operatingSystem: newConfiguration.host.operatingSystem,
+      osVersion: newConfiguration.host.osVersion,
+      encryptionEnabled: newConfiguration.host.encryptionEnabled,
+      effectiveFrom: event.occurredAt,
+      effectiveTo: null, // 現在有効
+      changedBy: event.data.updatedBy,
+      changeReason: event.data.changeReason
+    });
+
+    // 3. systems テーブルも更新（最新状態の非正規化）
+    await this.systemRepository.updateHostConfiguration(
+      systemId,
+      newConfiguration.host
+    );
+  }
+}
+```
+
+#### データ整合性の保証
+
+**EXCLUDE制約による重複期間防止**:
+
+```sql
+EXCLUDE USING gist (
+    system_id WITH =,
+    tstzrange(effective_from, effective_to, '[)') WITH &&
+)
+```
+
+この制約により、同一システムで有効期間が重複するレコードの挿入を防ぎます。
+
+**例**:
+- レコード1: `effective_from='2025-01-01', effective_to='2025-06-01'` ✅
+- レコード2: `effective_from='2025-06-01', effective_to=NULL` ✅
+- レコード3: `effective_from='2025-05-01', effective_to='2025-07-01'` ❌ エラー（重複）
+
+#### 運用上の利点
+
+1. **完全な変更履歴**: すべてのスペック変更を記録
+2. **時点復元**: 任意の時点の構成を再現可能
+3. **監査証跡**: いつ、誰が、なぜ変更したかを記録
+4. **容量計画**: リソース使用傾向の分析
+5. **コスト追跡**: スペック変更によるコスト変動の可視化
+
+### 1.7 Read Model Materialized View
 
 システム情報の読み取り最適化マテリアライズドビュー（パフォーマンス最適化）
 
@@ -1592,6 +1772,11 @@ CREATE TABLE processed_events (
     -- テーブル定義 (上記参照)
 );
 
+-- Create system_host_history table
+CREATE TABLE system_host_history (
+    -- テーブル定義 (上記参照)
+);
+
 -- Note: system_name_reservations table is NOT created
 -- システム名の一意性はRedisで保証される（セクション1.4参照）
 
@@ -1613,27 +1798,57 @@ CREATE VIEW system_summary_view AS (
 -- migrations/V1.0.1__insert_sample_data.sql
 
 -- サンプルシステムデータ (開発・テスト用)
-INSERT INTO systems (
-    system_id, name, type, status,
-    host_cpu_cores, host_memory_gb, host_storage_gb,
-    host_encryption_enabled, security_classification, criticality_level,
-    created_by
-) VALUES
-(
-    gen_random_uuid(), 'web-frontend-prod', 'WEB', 'ACTIVE',
-    4, 8, 100, true, 'INTERNAL', 'HIGH',
-    'system-admin'
-),
-(
-    gen_random_uuid(), 'api-gateway-prod', 'API', 'ACTIVE',
-    8, 16, 200, true, 'CONFIDENTIAL', 'CRITICAL',
-    'system-admin'
-),
-(
-    gen_random_uuid(), 'database-primary', 'DATABASE', 'ACTIVE',
-    16, 64, 1000, true, 'RESTRICTED', 'CRITICAL',
-    'system-admin'
-);
+DO $$
+DECLARE
+    system1_id UUID := gen_random_uuid();
+    system2_id UUID := gen_random_uuid();
+    system3_id UUID := gen_random_uuid();
+BEGIN
+    -- システムデータ投入
+    INSERT INTO systems (
+        system_id, name, type, status,
+        host_cpu_cores, host_memory_gb, host_storage_gb,
+        host_encryption_enabled, security_classification, criticality_level,
+        created_by
+    ) VALUES
+    (
+        system1_id, 'web-frontend-prod', 'WEB', 'ACTIVE',
+        4, 8, 100, true, 'INTERNAL', 'HIGH',
+        'system-admin'
+    ),
+    (
+        system2_id, 'api-gateway-prod', 'API', 'ACTIVE',
+        8, 16, 200, true, 'CONFIDENTIAL', 'CRITICAL',
+        'system-admin'
+    ),
+    (
+        system3_id, 'database-primary', 'DATABASE', 'ACTIVE',
+        16, 64, 1000, true, 'RESTRICTED', 'CRITICAL',
+        'system-admin'
+    );
+
+    -- ホスト構成履歴の初期レコード投入
+    INSERT INTO system_host_history (
+        system_id, cpu_cores, memory_gb, storage_gb,
+        operating_system, os_version, encryption_enabled,
+        effective_from, effective_to, changed_by, change_reason
+    ) VALUES
+    (
+        system1_id, 4, 8, 100,
+        'Ubuntu', '22.04', true,
+        CURRENT_TIMESTAMP, NULL, 'system-admin', '初期構成'
+    ),
+    (
+        system2_id, 8, 16, 200,
+        'Ubuntu', '22.04', true,
+        CURRENT_TIMESTAMP, NULL, 'system-admin', '初期構成'
+    ),
+    (
+        system3_id, 16, 64, 1000,
+        'PostgreSQL on Ubuntu', '22.04', true,
+        CURRENT_TIMESTAMP, NULL, 'system-admin', '初期構成'
+    );
+END $$;
 ```
 
 #### Phase 3: パフォーマンス最適化 (V1.1.0)
