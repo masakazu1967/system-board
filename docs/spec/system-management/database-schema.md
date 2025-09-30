@@ -492,11 +492,106 @@ CREATE UNIQUE INDEX idx_system_summary_view_system_id ON system_summary_view(sys
         },
         "previousConfiguration": {
           "type": "object",
-          "description": "変更前の構成情報"
+          "description": "変更前の構成情報",
+          "properties": {
+            "host": {
+              "type": "object",
+              "properties": {
+                "cpuCores": {
+                  "type": "integer",
+                  "minimum": 1,
+                  "description": "CPUコア数"
+                },
+                "memoryGb": {
+                  "type": "integer",
+                  "minimum": 1,
+                  "description": "メモリ容量(GB)"
+                },
+                "storageGb": {
+                  "type": "integer",
+                  "minimum": 1,
+                  "description": "ストレージ容量(GB)"
+                },
+                "operatingSystem": {
+                  "type": "string",
+                  "description": "OS名"
+                },
+                "osVersion": {
+                  "type": "string",
+                  "description": "OSバージョン"
+                },
+                "encryptionEnabled": {
+                  "type": "boolean",
+                  "description": "暗号化有効フラグ"
+                }
+              }
+            },
+            "securityClassification": {
+              "type": "string",
+              "enum": ["PUBLIC", "INTERNAL", "CONFIDENTIAL", "RESTRICTED"],
+              "description": "セキュリティ分類"
+            },
+            "criticalityLevel": {
+              "type": "string",
+              "enum": ["LOW", "MEDIUM", "HIGH", "CRITICAL"],
+              "description": "クリティカルレベル"
+            }
+          }
         },
         "newConfiguration": {
           "type": "object",
-          "description": "変更後の構成情報"
+          "description": "変更後の構成情報",
+          "properties": {
+            "host": {
+              "type": "object",
+              "properties": {
+                "cpuCores": {
+                  "type": "integer",
+                  "minimum": 1,
+                  "description": "CPUコア数"
+                },
+                "memoryGb": {
+                  "type": "integer",
+                  "minimum": 1,
+                  "description": "メモリ容量(GB)"
+                },
+                "storageGb": {
+                  "type": "integer",
+                  "minimum": 1,
+                  "description": "ストレージ容量(GB)"
+                },
+                "operatingSystem": {
+                  "type": "string",
+                  "description": "OS名"
+                },
+                "osVersion": {
+                  "type": "string",
+                  "description": "OSバージョン"
+                },
+                "encryptionEnabled": {
+                  "type": "boolean",
+                  "description": "暗号化有効フラグ"
+                }
+              }
+            },
+            "securityClassification": {
+              "type": "string",
+              "enum": ["PUBLIC", "INTERNAL", "CONFIDENTIAL", "RESTRICTED"],
+              "description": "セキュリティ分類"
+            },
+            "criticalityLevel": {
+              "type": "string",
+              "enum": ["LOW", "MEDIUM", "HIGH", "CRITICAL"],
+              "description": "クリティカルレベル"
+            }
+          }
+        },
+        "changedFields": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "description": "変更されたフィールドのリスト（例: ['host.cpuCores', 'securityClassification']）"
         },
         "updatedAt": {
           "type": "string",
@@ -549,6 +644,71 @@ CREATE UNIQUE INDEX idx_system_summary_view_system_id ON system_summary_view(sys
   ]
 }
 ```
+
+#### SystemConfigurationUpdated イベント例
+
+```json
+{
+  "eventId": "7c9e6679-7425-40de-944b-e07fc1f90ae7",
+  "eventType": "SystemConfigurationUpdated",
+  "eventVersion": "1.0",
+  "occurredAt": "2025-09-30T15:30:00.000Z",
+  "aggregateId": "550e8400-e29b-41d4-a716-446655440000",
+  "aggregateVersion": 3,
+  "data": {
+    "systemId": "550e8400-e29b-41d4-a716-446655440000",
+    "previousConfiguration": {
+      "host": {
+        "cpuCores": 4,
+        "memoryGb": 8,
+        "storageGb": 100,
+        "operatingSystem": "Ubuntu",
+        "osVersion": "20.04",
+        "encryptionEnabled": false
+      },
+      "securityClassification": "INTERNAL",
+      "criticalityLevel": "MEDIUM"
+    },
+    "newConfiguration": {
+      "host": {
+        "cpuCores": 8,
+        "memoryGb": 16,
+        "storageGb": 200,
+        "operatingSystem": "Ubuntu",
+        "osVersion": "22.04",
+        "encryptionEnabled": true
+      },
+      "securityClassification": "CONFIDENTIAL",
+      "criticalityLevel": "HIGH"
+    },
+    "changedFields": [
+      "host.cpuCores",
+      "host.memoryGb",
+      "host.storageGb",
+      "host.osVersion",
+      "host.encryptionEnabled",
+      "securityClassification",
+      "criticalityLevel"
+    ],
+    "updatedAt": "2025-09-30T15:30:00.000Z",
+    "updatedBy": "admin@example.com",
+    "changeReason": "セキュリティ要件の強化に伴うスペック増強とOS更新"
+  },
+  "metadata": {
+    "correlationId": "c89e7f5a-9b4d-4c4f-9e3d-5f8c9d5e6a7b",
+    "causationId": "a12b3c4d-5e6f-7g8h-9i0j-1k2l3m4n5o6p",
+    "userId": "admin@example.com",
+    "source": "system-management-api"
+  }
+}
+```
+
+**変更追跡の利点:**
+
+1. **監査証跡**: 変更前後の完全な状態を保持
+2. **変更分析**: `changedFields`により差分を高速特定
+3. **イベントリプレイ**: 構成履歴の完全な再構築が可能
+4. **コンプライアンス**: 変更理由の記録による説明責任
 
 ### 2.4 PackageInstalled イベントスキーマ
 
