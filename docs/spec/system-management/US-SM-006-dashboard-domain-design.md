@@ -246,39 +246,111 @@ export class ViewDashboardQueryHandler implements IQueryHandler<ViewDashboardQue
     private readonly dashboardRepository: DashboardReadModelRepository,
     private readonly cacheService: CacheService,
     private readonly authorizationService: AuthorizationService,
+    private readonly logger: Logger,
+    private readonly metricsService: DashboardMetricsService,
   ) {}
 
   async execute(query: ViewDashboardQuery): Promise<DashboardResponse> {
-    // 1. 認可チェック
-    await this.authorizationService.ensureCanViewDashboard(query.userId);
+    const timer = this.metricsService.queryDuration.startTimer();
 
-    // 2. キャッシュ確認
-    const cacheKey = this.buildCacheKey(query);
-    const cachedData = await this.cacheService.get<DashboardResponse>(cacheKey);
+    try {
+      // 1. 認可チェック（エラー時はそのままthrow）
+      await this.authorizationService.ensureCanViewDashboard(query.userId);
 
-    if (cachedData) {
-      return cachedData;
+      // 2. キャッシュ確認（エラーは無視してDBフォールバック）
+      const cacheKey = this.buildCacheKey(query);
+      try {
+        const cachedData = await this.cacheService.get<DashboardResponse>(cacheKey);
+        if (cachedData) {
+          this.metricsService.cacheHits.inc({ cache_layer: 'redis' });
+          timer({ view_mode: query.viewMode, cache_hit: 'true' });
+          return cachedData;
+        }
+      } catch (cacheError) {
+        this.logger.warn('Cache retrieval failed, falling back to DB', {
+          cacheKey,
+          error: cacheError.message,
+        });
+        this.metricsService.cacheMisses.inc();
+      }
+
+      // 3. Read Modelからデータ取得
+      const dashboardData = await this.dashboardRepository.findDashboardData(
+        query.userId,
+        query.filters,
+        query.viewMode,
+        query.pagination,
+      );
+
+      // 4. レスポンス構築
+      const response = new DashboardResponse(dashboardData);
+
+      // 5. キャッシュ保存（エラーは無視して可用性優先）
+      try {
+        await this.cacheService.set(cacheKey, response, 60);
+      } catch (cacheError) {
+        this.logger.warn('Cache set failed, continuing without cache', {
+          cacheKey,
+          error: cacheError.message,
+        });
+      }
+
+      timer({ view_mode: query.viewMode, cache_hit: 'false' });
+      return response;
+
+    } catch (error) {
+      timer({ view_mode: query.viewMode, cache_hit: 'error' });
+
+      // 認可エラーはそのまま再throw
+      if (error instanceof UnauthorizedError) {
+        throw error;
+      }
+
+      // その他のエラーはログ記録してカスタムエラーを投げる
+      this.logger.error('Dashboard query execution failed', {
+        queryId: query.queryId,
+        userId: query.userId.getValue(),
+        error: error.message,
+        stack: error.stack,
+      });
+
+      throw new DashboardQueryError(
+        'Failed to retrieve dashboard data',
+        error
+      );
     }
-
-    // 3. Read Modelからデータ取得
-    const dashboardData = await this.dashboardRepository.findDashboardData(
-      query.userId,
-      query.filters,
-      query.viewMode,
-      query.pagination,
-    );
-
-    // 4. レスポンス構築
-    const response = new DashboardResponse(dashboardData);
-
-    // 5. キャッシュ保存（TTL: 60秒）
-    await this.cacheService.set(cacheKey, response, 60);
-
-    return response;
   }
 
   private buildCacheKey(query: ViewDashboardQuery): string {
     return `dashboard:${query.userId.getValue()}:${JSON.stringify(query.filters)}:${query.viewMode}`;
+  }
+}
+
+/**
+ * Dashboard Query専用エラークラス
+ */
+export class DashboardQueryError extends Error {
+  constructor(
+    message: string,
+    public readonly cause?: Error,
+  ) {
+    super(message);
+    this.name = 'DashboardQueryError';
+    Error.captureStackTrace(this, this.constructor);
+  }
+}
+
+/**
+ * Projection処理専用エラークラス
+ */
+export class ProjectionError extends Error {
+  constructor(
+    message: string,
+    public readonly cause?: Error,
+  ) {
+    super(message);
+    this.name = 'ProjectionError';
+    Error.captureStackTrace(this, this.constructor);
   }
 }
 ```
@@ -395,36 +467,66 @@ CREATE TABLE dashboard_system_view (
   updated_at TIMESTAMP NOT NULL DEFAULT NOW(),
   last_event_applied_at TIMESTAMP NOT NULL,
 
-  -- Indexes for filtering
-  INDEX idx_system_status (system_status),
-  INDEX idx_criticality (criticality),
-  INDEX idx_has_vulnerabilities (vulnerability_count) WHERE vulnerability_count > 0,
-  INDEX idx_has_eol_warnings (has_eol_warnings) WHERE has_eol_warnings = TRUE,
-  INDEX idx_has_urgent_tasks (urgent_task_count) WHERE urgent_task_count > 0
+  -- 基本インデックス（単一カラム）
+  INDEX idx_system_status (system_status) WHERE is_deleted = FALSE,
+  INDEX idx_criticality (criticality) WHERE is_deleted = FALSE,
+
+  -- 部分インデックス（条件付き）
+  INDEX idx_has_vulnerabilities (vulnerability_count) WHERE vulnerability_count > 0 AND is_deleted = FALSE,
+  INDEX idx_has_eol_warnings (has_eol_warnings) WHERE has_eol_warnings = TRUE AND is_deleted = FALSE,
+  INDEX idx_has_urgent_tasks (urgent_task_count) WHERE urgent_task_count > 0 AND is_deleted = FALSE,
+
+  -- HIGH PRIORITY: 複合インデックス（複数条件フィルタリング用）
+  INDEX idx_critical_with_vulns (criticality, vulnerability_count)
+    WHERE criticality IN ('HIGH', 'CRITICAL') AND vulnerability_count > 0 AND is_deleted = FALSE,
+
+  INDEX idx_status_criticality (system_status, criticality)
+    WHERE is_deleted = FALSE,
+
+  INDEX idx_criticality_eol (criticality, has_eol_warnings)
+    WHERE has_eol_warnings = TRUE AND is_deleted = FALSE,
+
+  -- ソート用インデックス
+  INDEX idx_updated_at_desc (updated_at DESC) WHERE is_deleted = FALSE,
+  INDEX idx_max_cvss_score_desc (max_cvss_score DESC NULLS LAST)
+    WHERE max_cvss_score IS NOT NULL AND is_deleted = FALSE,
+
+  INDEX idx_urgent_tasks_desc (urgent_task_count DESC)
+    WHERE urgent_task_count > 0 AND is_deleted = FALSE
 );
 
 -- Dashboard統計情報（Materialized View）
+-- HIGH PRIORITY: リアルタイム性要件（数秒以内）を満たすため、軽量化して頻繁にリフレッシュ
 CREATE MATERIALIZED VIEW dashboard_statistics AS
 SELECT
-  COUNT(*) AS total_systems,
-  COUNT(*) FILTER (WHERE system_status = 'ACTIVE') AS active_systems,
-  COUNT(*) FILTER (WHERE vulnerability_count > 0) AS systems_with_vulnerabilities,
-  COUNT(*) FILTER (WHERE has_eol_warnings = TRUE) AS systems_with_eol_warnings,
+  COUNT(*) FILTER (WHERE is_deleted = FALSE) AS total_systems,
+  COUNT(*) FILTER (WHERE system_status = 'ACTIVE' AND is_deleted = FALSE) AS active_systems,
+  COUNT(*) FILTER (WHERE vulnerability_count > 0 AND is_deleted = FALSE) AS systems_with_vulnerabilities,
+  COUNT(*) FILTER (WHERE has_eol_warnings = TRUE AND is_deleted = FALSE) AS systems_with_eol_warnings,
 
-  COALESCE(SUM(vulnerability_count), 0) AS total_vulnerabilities,
-  COALESCE(SUM(critical_vulnerabilities), 0) AS critical_vulnerabilities,
+  COALESCE(SUM(vulnerability_count) FILTER (WHERE is_deleted = FALSE), 0) AS total_vulnerabilities,
+  COALESCE(SUM(critical_vulnerabilities) FILTER (WHERE is_deleted = FALSE), 0) AS critical_vulnerabilities,
 
-  COALESCE(SUM(open_task_count), 0) AS total_tasks,
-  COALESCE(SUM(urgent_task_count), 0) AS urgent_tasks,
-  COALESCE(SUM(overdue_task_count), 0) AS overdue_tasks,
+  COALESCE(SUM(open_task_count) FILTER (WHERE is_deleted = FALSE), 0) AS total_tasks,
+  COALESCE(SUM(urgent_task_count) FILTER (WHERE is_deleted = FALSE), 0) AS urgent_tasks,
+  COALESCE(SUM(overdue_task_count) FILTER (WHERE is_deleted = FALSE), 0) AS overdue_tasks,
 
-  MAX(updated_at) AS last_updated
+  MAX(updated_at) FILTER (WHERE is_deleted = FALSE) AS last_updated,
+  NOW() AS refreshed_at
 FROM dashboard_system_view;
 
--- Materialized Viewの定期リフレッシュ（PostgreSQL Scheduler）
-CREATE INDEX ON dashboard_statistics (last_updated);
+-- HIGH PRIORITY: CONCURRENT REFRESHを可能にするユニークインデックス
+CREATE UNIQUE INDEX ON dashboard_statistics ((1));
 
--- 自動リフレッシュ用関数
+-- HIGH PRIORITY: 30秒ごとの自動リフレッシュ（要件: 数秒以内の更新反映）
+-- pg_cron extensionを使用
+SELECT cron.schedule(
+  'refresh-dashboard-stats-30s',
+  '*/30 * * * * *', -- 30秒ごと
+  $$REFRESH MATERIALIZED VIEW CONCURRENTLY dashboard_statistics$$
+);
+
+-- 自動リフレッシュ用関数（手動実行用）
 CREATE OR REPLACE FUNCTION refresh_dashboard_statistics()
 RETURNS void AS $$
 BEGIN
@@ -504,30 +606,117 @@ export class DashboardProjectionService {
 
   @EventsHandler(VulnerabilityDetected)
   async onVulnerabilityDetected(event: VulnerabilityDetected): Promise<void> {
-    // Update vulnerability counts for affected systems
-    for (const systemId of event.affectedSystems) {
-      await this.dashboardRepository.incrementVulnerabilityCount(
-        systemId,
-        event.cvssScore >= 9.0 ? 'critical' : 'high',
-        event.cvssScore,
-      );
-    }
+    // CRITICAL: リトライ戦略を使用してイベント処理の信頼性を確保
+    await this.retryWithBackoff(async () => {
+      // Update vulnerability counts for affected systems
+      for (const systemId of event.affectedSystems) {
+        await this.dashboardRepository.incrementVulnerabilityCount(
+          systemId,
+          event.cvssScore >= 9.0 ? 'critical' : 'high',
+          event.cvssScore,
+        );
+      }
 
-    // Invalidate cache for affected systems
-    await this.invalidateCacheForSystems(event.affectedSystems);
+      // Invalidate cache for affected systems
+      await this.invalidateCacheForSystems(event.affectedSystems);
+    }, event);
   }
 
   @EventsHandler(TaskCreated)
   async onTaskCreated(event: TaskCreated): Promise<void> {
+    // CRITICAL: リトライ戦略を使用してイベント処理の信頼性を確保
     if (event.systemRef) {
-      await this.dashboardRepository.incrementTaskCount(
-        event.systemRef,
-        event.priority === 'URGENT' ? 'urgent' : 'normal',
-      );
+      await this.retryWithBackoff(async () => {
+        await this.dashboardRepository.incrementTaskCount(
+          event.systemRef,
+          event.priority === 'URGENT' ? 'urgent' : 'normal',
+        );
 
-      // Invalidate cache
-      await this.invalidateCacheForSystems([event.systemRef]);
+        // Invalidate cache
+        await this.invalidateCacheForSystems([event.systemRef]);
+      }, event);
     }
+  }
+
+  /**
+   * CRITICAL: イベント処理失敗時のリトライ戦略
+   * 最大3回まで指数バックオフでリトライし、失敗した場合はDead Letter Queueへ送信
+   */
+  private async retryWithBackoff<T>(
+    operation: () => Promise<T>,
+    event: DomainEvent,
+  ): Promise<T> {
+    const MAX_RETRIES = 3;
+    const RETRY_DELAY_MS = 1000;
+
+    for (let attempt = 1; attempt <= MAX_RETRIES; attempt++) {
+      try {
+        return await operation();
+      } catch (error) {
+        this.logger.error(
+          `Event processing failed (attempt ${attempt}/${MAX_RETRIES})`,
+          { event: event.eventType, eventId: event.eventId, error }
+        );
+
+        if (attempt === MAX_RETRIES) {
+          // 最終リトライ失敗 - Dead Letter Queueへ送信
+          await this.sendToDeadLetterQueue(event, error);
+          throw new ProjectionError(
+            `Failed to process event after ${MAX_RETRIES} attempts: ${event.eventType}`,
+            error
+          );
+        }
+
+        // 指数バックオフ
+        const delay = RETRY_DELAY_MS * Math.pow(2, attempt - 1);
+        await this.sleep(delay);
+      }
+    }
+  }
+
+  /**
+   * CRITICAL: Dead Letter Queue送信
+   * 処理に失敗したイベントを保存し、手動介入や再処理を可能にする
+   */
+  private async sendToDeadLetterQueue(event: DomainEvent, error: Error): Promise<void> {
+    try {
+      await this.dlqService.send({
+        eventId: event.eventId,
+        eventType: event.eventType,
+        eventData: event,
+        error: {
+          message: error.message,
+          stack: error.stack,
+        },
+        failedAt: new Date(),
+        context: 'DashboardProjection',
+        retryCount: 3,
+      });
+
+      this.logger.warn('Event sent to Dead Letter Queue', {
+        eventType: event.eventType,
+        eventId: event.eventId,
+      });
+    } catch (dlqError) {
+      // DLQ送信も失敗した場合は緊急アラート
+      this.logger.error('CRITICAL: Failed to send event to DLQ', {
+        event: event.eventType,
+        originalError: error.message,
+        dlqError: dlqError.message,
+      });
+
+      // 緊急通知（Microsoft Teams）
+      await this.alertService.sendCriticalAlert({
+        title: 'Dashboard Projection: Critical Failure',
+        message: `Failed to process event and send to DLQ: ${event.eventType}`,
+        eventId: event.eventId,
+        error: error.message,
+      });
+    }
+  }
+
+  private sleep(ms: number): Promise<void> {
+    return new Promise(resolve => setTimeout(resolve, ms));
   }
 
   private async invalidateCacheForSystems(systemIds: string[]): Promise<void> {
@@ -552,21 +741,32 @@ export class DashboardProjectionService {
 
 ```yaml
 # Dashboard更新専用トピック
+# CRITICAL: 本番環境では replication_factor を 3 に設定して高可用性を確保
 topics:
   - name: dashboard.system.updates
     partitions: 3
-    replication_factor: 1
+    replication_factor: 3  # CRITICAL: 単一障害点を避けるため3以上必須
     config:
       retention.ms: 86400000  # 24時間保持
       cleanup.policy: delete
+      min.insync.replicas: 2  # CRITICAL: 書き込み保証のため2以上設定
+      compression.type: snappy  # ネットワーク効率化
 
   - name: dashboard.vulnerability.updates
     partitions: 3
-    replication_factor: 1
+    replication_factor: 3  # CRITICAL: 単一障害点を避けるため3以上必須
+    config:
+      retention.ms: 86400000
+      min.insync.replicas: 2
+      compression.type: snappy
 
   - name: dashboard.task.updates
     partitions: 3
-    replication_factor: 1
+    replication_factor: 3  # CRITICAL: 単一障害点を避けるため3以上必須
+    config:
+      retention.ms: 86400000
+      min.insync.replicas: 2
+      compression.type: snappy
 ```
 
 #### 5.1.2 Real-time Update Flow
@@ -601,6 +801,45 @@ sequenceDiagram
 
 ### 5.2 WebSocket Gateway実装
 
+#### 5.2.1 WebSocket負荷分散（Redis Adapter）
+
+**HIGH PRIORITY**: 複数インスタンス間でWebSocket接続を共有するため、Redis Adapterを使用
+
+```typescript
+// main.ts - アプリケーション起動時の設定
+import { NestFactory } from '@nestjs/core';
+import { IoAdapter } from '@nestjs/platform-socket.io';
+import { createAdapter } from '@socket.io/redis-adapter';
+import { createClient } from 'redis';
+import { AppModule } from './app.module';
+
+async function bootstrap() {
+  const app = await NestFactory.create(AppModule);
+
+  // HIGH PRIORITY: Redis Adapter設定（WebSocket負荷分散）
+  const pubClient = createClient({
+    host: process.env.REDIS_HOST || 'localhost',
+    port: parseInt(process.env.REDIS_PORT || '6379'),
+    password: process.env.REDIS_PASSWORD,
+  });
+
+  const subClient = pubClient.duplicate();
+
+  await Promise.all([
+    pubClient.connect(),
+    subClient.connect(),
+  ]);
+
+  const io = app.get(DashboardGateway).server;
+  io.adapter(createAdapter(pubClient, subClient));
+
+  await app.listen(3000);
+}
+bootstrap();
+```
+
+#### 5.2.2 DashboardGateway実装
+
 ```typescript
 import {
   WebSocketGateway,
@@ -614,9 +853,19 @@ import { Server, Socket } from 'socket.io';
 @WebSocketGateway({
   namespace: '/dashboard',
   cors: {
-    origin: process.env.FRONTEND_URL,
+    origin: (origin, callback) => {
+      // HIGH PRIORITY: 複数オリジン対応
+      const allowedOrigins = process.env.ALLOWED_ORIGINS?.split(',') || [];
+      if (!origin || allowedOrigins.includes(origin)) {
+        callback(null, true);
+      } else {
+        callback(new Error('CORS policy violation'));
+      }
+    },
     credentials: true,
   },
+  // HIGH PRIORITY: Redis Adapterによる負荷分散対応
+  transports: ['websocket', 'polling'],
 })
 export class DashboardGateway implements OnGatewayConnection, OnGatewayDisconnect {
   @WebSocketServer()
@@ -626,7 +875,10 @@ export class DashboardGateway implements OnGatewayConnection, OnGatewayDisconnec
 
   constructor(
     private readonly authService: AuthService,
+    private readonly authorizationService: AuthorizationService,
+    private readonly auditService: AuditService,
     private readonly eventBus: EventBus,
+    private readonly logger: Logger,
   ) {
     // Subscribe to dashboard update events
     this.subscribeToDashboardEvents();
@@ -663,13 +915,55 @@ export class DashboardGateway implements OnGatewayConnection, OnGatewayDisconnec
   }
 
   @SubscribeMessage('subscribe-system')
-  handleSubscribeSystem(socket: Socket, systemId: string) {
-    socket.join(`system:${systemId}`);
+  async handleSubscribeSystem(socket: Socket, systemId: string) {
+    try {
+      const userId = socket.data.userId;
+
+      // CRITICAL: 認可チェック - ユーザーがこのシステムにアクセス権限があるか確認
+      const hasAccess = await this.authorizationService.canAccessSystem(userId, systemId);
+      if (!hasAccess) {
+        await this.auditService.logUnauthorizedSystemAccess({
+          userId,
+          systemId,
+          action: 'subscribe',
+          timestamp: new Date(),
+        });
+        socket.emit('error', { message: 'Access denied to system' });
+        return;
+      }
+
+      // UUIDフォーマット検証
+      if (!this.isValidSystemId(systemId)) {
+        socket.emit('error', { message: 'Invalid system ID' });
+        return;
+      }
+
+      socket.join(`system:${systemId}`);
+
+      // 監査ログ
+      await this.auditService.logSystemSubscription({
+        userId,
+        systemId,
+        sessionId: socket.data.sessionId,
+        timestamp: new Date(),
+      });
+
+      socket.emit('subscribed', { systemId });
+    } catch (error) {
+      this.logger.error('Subscribe system error', error);
+      socket.emit('error', { message: 'Subscription failed' });
+    }
   }
 
   @SubscribeMessage('unsubscribe-system')
   handleUnsubscribeSystem(socket: Socket, systemId: string) {
     socket.leave(`system:${systemId}`);
+  }
+
+  private isValidSystemId(systemId: string): boolean {
+    // UUIDフォーマット検証
+    const uuidRegex = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
+    return uuidRegex.test(systemId);
   }
 
   // Event handlers
@@ -710,31 +1004,111 @@ export class DashboardGateway implements OnGatewayConnection, OnGatewayDisconnec
 
 ### 5.3 フロントエンド統合例
 
+#### 5.3.1 DashboardRealtimeService（再接続戦略付き）
+
+**HIGH PRIORITY**: ネットワーク障害時の自動再接続戦略を実装
+
 ```typescript
 // Frontend Dashboard Service
 import { io, Socket } from 'socket.io-client';
 
+export type ConnectionStatus = 'connected' | 'disconnected' | 'reconnecting';
+
 export class DashboardRealtimeService {
   private socket: Socket | null = null;
   private listeners: Map<string, Function[]> = new Map();
+  private reconnectAttempts = 0;
+  private readonly MAX_RECONNECT_ATTEMPTS = 5;
+  private readonly RECONNECT_DELAY_MS = 1000;
+  private connectionStatus: ConnectionStatus = 'disconnected';
 
   connect(token: string) {
+    // HIGH PRIORITY: 再接続設定を含む接続オプション
     this.socket = io(`${process.env.API_URL}/dashboard`, {
       auth: { token },
-      transports: ['websocket'],
+      transports: ['websocket', 'polling'],
+      reconnection: true,
+      reconnectionAttempts: this.MAX_RECONNECT_ATTEMPTS,
+      reconnectionDelay: this.RECONNECT_DELAY_MS,
+      reconnectionDelayMax: 5000,
+      timeout: 10000,
     });
 
-    this.socket.on('connected', (data) => {
-      console.log('Dashboard WebSocket connected:', data);
+    this.setupEventHandlers();
+  }
+
+  private setupEventHandlers() {
+    if (!this.socket) return;
+
+    // 接続成功
+    this.socket.on('connect', () => {
+      console.log('Dashboard WebSocket connected');
+      this.connectionStatus = 'connected';
+      this.reconnectAttempts = 0;
+      this.notifyListeners('connection-status', { status: 'connected' });
     });
 
+    // 切断
+    this.socket.on('disconnect', (reason) => {
+      console.warn('Dashboard WebSocket disconnected:', reason);
+      this.connectionStatus = 'disconnected';
+      this.notifyListeners('connection-status', {
+        status: 'disconnected',
+        reason
+      });
+
+      // サーバー側から切断された場合は手動再接続
+      if (reason === 'io server disconnect') {
+        this.reconnect();
+      }
+    });
+
+    // 接続エラー（HIGH PRIORITY: エラーハンドリング）
+    this.socket.on('connect_error', (error) => {
+      console.error('Dashboard WebSocket connection error:', error);
+      this.connectionStatus = 'reconnecting';
+      this.reconnectAttempts++;
+
+      if (this.reconnectAttempts >= this.MAX_RECONNECT_ATTEMPTS) {
+        this.notifyListeners('connection-failed', {
+          message: 'Failed to connect after multiple attempts',
+          attempts: this.reconnectAttempts,
+        });
+      }
+    });
+
+    // データ更新イベント（HIGH PRIORITY: エラーハンドリング）
     this.socket.on('system-update', (update: DashboardUpdate) => {
-      this.notifyListeners('system-update', update);
+      try {
+        this.notifyListeners('system-update', update);
+      } catch (error) {
+        console.error('Error handling system update:', error);
+      }
     });
 
     this.socket.on('dashboard-update', (update: DashboardUpdate) => {
-      this.notifyListeners('dashboard-update', update);
+      try {
+        this.notifyListeners('dashboard-update', update);
+      } catch (error) {
+        console.error('Error handling dashboard update:', error);
+      }
     });
+
+    // エラー通知
+    this.socket.on('error', (error: { message: string }) => {
+      console.error('WebSocket error:', error);
+      this.notifyListeners('error', error);
+    });
+  }
+
+  private reconnect() {
+    if (this.socket && this.reconnectAttempts < this.MAX_RECONNECT_ATTEMPTS) {
+      this.socket.connect();
+    }
+  }
+
+  getConnectionStatus(): ConnectionStatus {
+    return this.connectionStatus;
   }
 
   subscribeToSystem(systemId: string) {
@@ -1065,6 +1439,149 @@ export class DashboardAuthorizationService {
 }
 ```
 
+#### 8.2.1 拡張データマスキングサービス（MEDIUM PRIORITY）
+
+```typescript
+@Injectable()
+export class DashboardDataMaskingService {
+  constructor(
+    private readonly authService: AuthService,
+  ) {}
+
+  /**
+   * MEDIUM PRIORITY: 包括的なデータマスキング
+   * セキュリティ分類に応じて、システム情報全体をマスキング
+   */
+  async maskDashboardData(
+    userId: UserId,
+    dashboardData: DashboardResponse,
+  ): Promise<DashboardResponse> {
+    const user = await this.authService.getUser(userId);
+
+    // システムリストをマスキング
+    const maskedSystems = await Promise.all(
+      dashboardData.systems
+        .map(system => this.maskSystemData(user, system))
+        .filter(system => system !== null) // RESTRICTED は完全に除外
+    );
+
+    // 統計情報もマスキング（アクセス可能なシステムのみカウント）
+    const maskedStatistics = this.maskStatistics(user, dashboardData.statistics, maskedSystems.length);
+
+    return {
+      ...dashboardData,
+      systems: maskedSystems,
+      statistics: maskedStatistics,
+    };
+  }
+
+  /**
+   * システム単位のデータマスキング
+   */
+  private async maskSystemData(
+    user: User,
+    system: SystemSummary,
+  ): Promise<SystemSummary | null> {
+    const securityLevel = this.getSecurityLevel(system.securityClassification);
+
+    // RESTRICTED: 完全に非表示
+    if (securityLevel === 'RESTRICTED' &&
+        !user.hasPermission(DashboardPermission.VIEW_RESTRICTED)) {
+      return null;
+    }
+
+    // CONFIDENTIAL: 詳細情報をマスク
+    if (securityLevel === 'CONFIDENTIAL' &&
+        !user.hasPermission(DashboardPermission.VIEW_CONFIDENTIAL)) {
+      return {
+        systemId: system.systemId, // IDは保持（統計目的）
+        systemName: this.maskString(system.systemName),
+        systemType: system.systemType, // 種別は表示
+        status: system.status,
+        criticality: system.criticality,
+
+        // 脆弱性情報をマスク
+        vulnerabilityCount: 0,
+        highSeverityVulnerabilities: 0,
+        criticalVulnerabilities: 0,
+        maxCVSSScore: undefined,
+
+        // EOL情報をマスク
+        hasEOLWarnings: false,
+        eolDaysRemaining: undefined,
+
+        // タスク情報をマスク
+        openTaskCount: 0,
+        urgentTaskCount: 0,
+        overdueTaskCount: 0,
+
+        lastUpdated: system.lastUpdated,
+      };
+    }
+
+    // INTERNAL: 部分的な情報制限
+    if (securityLevel === 'INTERNAL' &&
+        !user.hasPermission(DashboardPermission.VIEW_ALL_SYSTEMS)) {
+      return {
+        ...system,
+        // システム名の一部をマスク（最初の3文字のみ表示）
+        systemName: this.partialMaskString(system.systemName, 3),
+      };
+    }
+
+    // PUBLIC または権限あり: マスクなし
+    return system;
+  }
+
+  /**
+   * 統計情報のマスキング
+   */
+  private maskStatistics(
+    user: User,
+    stats: DashboardStatistics,
+    visibleSystemCount: number,
+  ): DashboardStatistics {
+    // 管理者権限がない場合は、表示可能なシステムのみカウント
+    if (!user.hasPermission(DashboardPermission.VIEW_ALL_SYSTEMS)) {
+      return {
+        ...stats,
+        totalSystems: visibleSystemCount,
+        activeSystems: Math.min(stats.activeSystems, visibleSystemCount),
+        systemsWithVulnerabilities: Math.min(stats.systemsWithVulnerabilities, visibleSystemCount),
+        systemsWithEOLWarnings: Math.min(stats.systemsWithEOLWarnings, visibleSystemCount),
+        // 脆弱性・タスク数も制限（詳細は非表示）
+      };
+    }
+
+    return stats;
+  }
+
+  /**
+   * 完全マスキング
+   */
+  private maskString(value: string): string {
+    return '*** CONFIDENTIAL ***';
+  }
+
+  /**
+   * 部分マスキング（最初のN文字のみ表示）
+   */
+  private partialMaskString(value: string, visibleChars: number): string {
+    if (value.length <= visibleChars) {
+      return value;
+    }
+    return `${value.substring(0, visibleChars)}***`;
+  }
+
+  /**
+   * セキュリティレベルの取得
+   */
+  private getSecurityLevel(classification: string): 'PUBLIC' | 'INTERNAL' | 'CONFIDENTIAL' | 'RESTRICTED' {
+    return classification as any;
+  }
+}
+```
+
 ### 8.2 監査ログ
 
 ```typescript
@@ -1237,27 +1754,396 @@ describe('DashboardGateway', () => {
 
 ### 11.1 メトリクス収集
 
+#### 11.1.1 包括的メトリクス定義（MEDIUM PRIORITY）
+
 ```typescript
-export class DashboardMetricsCollector {
+import { Injectable } from '@nestjs/common';
+import { Counter, Histogram, Gauge, Registry } from 'prom-client';
+
+@Injectable()
+export class DashboardMetricsService {
+  private readonly registry: Registry;
+
+  // Query Metrics
   @Histogram({
     name: 'dashboard_query_duration_seconds',
     help: 'Dashboard query execution time',
-    labelNames: ['view_mode', 'filter_count'],
+    labelNames: ['view_mode', 'cache_hit'],
+    buckets: [0.1, 0.5, 1, 2, 5],
   })
   queryDuration: Histogram;
 
+  // Cache Metrics
   @Counter({
     name: 'dashboard_cache_hits_total',
     help: 'Number of cache hits',
+    labelNames: ['cache_layer'], // L1 (memory) or L2 (redis)
   })
   cacheHits: Counter;
 
+  @Counter({
+    name: 'dashboard_cache_misses_total',
+    help: 'Number of cache misses',
+  })
+  cacheMisses: Counter;
+
+  @Histogram({
+    name: 'dashboard_cache_operation_duration_seconds',
+    help: 'Cache operation duration',
+    labelNames: ['operation', 'cache_layer'], // get/set/invalidate
+    buckets: [0.001, 0.005, 0.01, 0.05, 0.1],
+  })
+  cacheOperationDuration: Histogram;
+
+  // WebSocket Metrics
   @Gauge({
     name: 'dashboard_active_websocket_connections',
     help: 'Number of active WebSocket connections',
   })
   activeConnections: Gauge;
+
+  @Counter({
+    name: 'dashboard_websocket_messages_sent_total',
+    help: 'Number of WebSocket messages sent',
+    labelNames: ['message_type'], // system-update/dashboard-update/error
+  })
+  messagesSent: Counter;
+
+  @Histogram({
+    name: 'dashboard_websocket_message_latency_seconds',
+    help: 'WebSocket message delivery latency',
+    labelNames: ['message_type'],
+    buckets: [0.001, 0.005, 0.01, 0.05, 0.1, 0.5],
+  })
+  messageLatency: Histogram;
+
+  @Counter({
+    name: 'dashboard_websocket_connections_total',
+    help: 'Total WebSocket connection attempts',
+    labelNames: ['status'], // success/failure
+  })
+  connectionAttempts: Counter;
+
+  @Counter({
+    name: 'dashboard_websocket_disconnections_total',
+    help: 'Total WebSocket disconnections',
+    labelNames: ['reason'], // client_disconnect/server_disconnect/error
+  })
+  disconnections: Counter;
+
+  // Event Projection Metrics
+  @Counter({
+    name: 'dashboard_projection_events_processed_total',
+    help: 'Number of events processed by projection',
+    labelNames: ['event_type', 'status'], // status: success/failure
+  })
+  eventsProcessed: Counter;
+
+  @Gauge({
+    name: 'dashboard_projection_lag_seconds',
+    help: 'Projection lag in seconds (time since event occurred)',
+    labelNames: ['topic'],
+  })
+  projectionLag: Gauge;
+
+  @Histogram({
+    name: 'dashboard_projection_processing_duration_seconds',
+    help: 'Time taken to process an event',
+    labelNames: ['event_type'],
+    buckets: [0.01, 0.05, 0.1, 0.5, 1, 2],
+  })
+  projectionProcessingDuration: Histogram;
+
+  @Histogram({
+    name: 'dashboard_projection_batch_size',
+    help: 'Number of events processed in batch',
+    buckets: [1, 10, 50, 100, 500],
+  })
+  batchSize: Histogram;
+
+  @Counter({
+    name: 'dashboard_projection_retries_total',
+    help: 'Number of projection retry attempts',
+    labelNames: ['event_type', 'attempt'], // attempt: 1/2/3
+  })
+  projectionRetries: Counter;
+
+  @Counter({
+    name: 'dashboard_projection_dlq_sent_total',
+    help: 'Number of events sent to Dead Letter Queue',
+    labelNames: ['event_type'],
+  })
+  dlqSent: Counter;
+
+  // Database Metrics
+  @Histogram({
+    name: 'dashboard_db_query_duration_seconds',
+    help: 'Database query duration',
+    labelNames: ['operation', 'table'], // select/insert/update, table name
+    buckets: [0.01, 0.05, 0.1, 0.5, 1, 2],
+  })
+  dbQueryDuration: Histogram;
+
+  @Counter({
+    name: 'dashboard_db_queries_total',
+    help: 'Total number of database queries',
+    labelNames: ['operation', 'status'], // status: success/error
+  })
+  dbQueries: Counter;
+
+  @Gauge({
+    name: 'dashboard_db_connection_pool_size',
+    help: 'Current database connection pool size',
+  })
+  dbConnectionPoolSize: Gauge;
+
+  @Gauge({
+    name: 'dashboard_db_connection_pool_idle',
+    help: 'Number of idle connections in pool',
+  })
+  dbConnectionPoolIdle: Gauge;
+
+  @Gauge({
+    name: 'dashboard_materialized_view_refresh_duration_seconds',
+    help: 'Materialized view refresh duration',
+  })
+  mvRefreshDuration: Gauge;
+
+  @Counter({
+    name: 'dashboard_materialized_view_refresh_total',
+    help: 'Number of materialized view refreshes',
+    labelNames: ['status'], // success/failure
+  })
+  mvRefreshCount: Counter;
+
+  @Gauge({
+    name: 'dashboard_materialized_view_row_count',
+    help: 'Number of rows in materialized view',
+  })
+  mvRowCount: Gauge;
+
+  // Kafka Consumer Metrics
+  @Gauge({
+    name: 'dashboard_kafka_consumer_lag',
+    help: 'Kafka consumer lag',
+    labelNames: ['topic', 'partition'],
+  })
+  kafkaConsumerLag: Gauge;
+
+  @Counter({
+    name: 'dashboard_kafka_messages_consumed_total',
+    help: 'Number of Kafka messages consumed',
+    labelNames: ['topic'],
+  })
+  kafkaMessagesConsumed: Counter;
+
+  @Counter({
+    name: 'dashboard_kafka_consumer_errors_total',
+    help: 'Number of Kafka consumer errors',
+    labelNames: ['topic', 'error_type'],
+  })
+  kafkaConsumerErrors: Counter;
+
+  // Error Metrics
+  @Counter({
+    name: 'dashboard_errors_total',
+    help: 'Total number of errors',
+    labelNames: ['error_type', 'component'], // component: query_handler/projection/websocket
+  })
+  errors: Counter;
+
+  constructor() {
+    this.registry = new Registry();
+    // Register all metrics with the registry
+  }
+
+  getMetrics(): Promise<string> {
+    return this.registry.metrics();
+  }
 }
+```
+
+#### 11.1.2 Prometheus監視ルール（MEDIUM PRIORITY）
+
+```yaml
+# prometheus-dashboard-rules.yml
+groups:
+  - name: dashboard_performance
+    interval: 30s
+    rules:
+      # クエリパフォーマンス監視
+      - alert: DashboardQuerySlow
+        expr: histogram_quantile(0.95, rate(dashboard_query_duration_seconds_bucket[5m])) > 2
+        for: 5m
+        labels:
+          severity: warning
+          component: dashboard
+        annotations:
+          summary: "Dashboard queries are slow"
+          description: "95th percentile query time is {{ $value }}s (threshold: 2s)"
+
+      - alert: DashboardQueryVerySlow
+        expr: histogram_quantile(0.99, rate(dashboard_query_duration_seconds_bucket[5m])) > 5
+        for: 2m
+        labels:
+          severity: critical
+          component: dashboard
+        annotations:
+          summary: "Dashboard queries are extremely slow"
+          description: "99th percentile query time is {{ $value }}s (threshold: 5s)"
+
+  - name: dashboard_websocket
+    interval: 30s
+    rules:
+      # WebSocket接続監視
+      - alert: HighWebSocketConnections
+        expr: dashboard_active_websocket_connections > 100
+        for: 5m
+        labels:
+          severity: warning
+          component: websocket
+        annotations:
+          summary: "High number of WebSocket connections"
+          description: "{{ $value }} active connections (threshold: 100)"
+
+      - alert: WebSocketConnectionFailures
+        expr: rate(dashboard_websocket_connections_total{status="failure"}[5m]) > 0.1
+        for: 2m
+        labels:
+          severity: warning
+          component: websocket
+        annotations:
+          summary: "High WebSocket connection failure rate"
+          description: "Connection failure rate: {{ $value }}/sec"
+
+      - alert: HighWebSocketMessageLatency
+        expr: histogram_quantile(0.95, rate(dashboard_websocket_message_latency_seconds_bucket[5m])) > 0.5
+        for: 5m
+        labels:
+          severity: warning
+          component: websocket
+        annotations:
+          summary: "High WebSocket message latency"
+          description: "95th percentile latency: {{ $value }}s (threshold: 0.5s)"
+
+  - name: dashboard_projection
+    interval: 30s
+    rules:
+      # Event Projection遅延監視
+      - alert: HighProjectionLag
+        expr: dashboard_projection_lag_seconds > 10
+        for: 2m
+        labels:
+          severity: critical
+          component: projection
+        annotations:
+          summary: "Dashboard projection is lagging"
+          description: "Projection lag is {{ $value }}s (threshold: 10s)"
+
+      - alert: ProjectionProcessingSlow
+        expr: histogram_quantile(0.95, rate(dashboard_projection_processing_duration_seconds_bucket[5m])) > 1
+        for: 5m
+        labels:
+          severity: warning
+          component: projection
+        annotations:
+          summary: "Projection processing is slow"
+          description: "95th percentile processing time: {{ $value }}s (threshold: 1s)"
+
+      - alert: HighProjectionFailureRate
+        expr: rate(dashboard_projection_events_processed_total{status="failure"}[5m]) / rate(dashboard_projection_events_processed_total[5m]) > 0.05
+        for: 5m
+        labels:
+          severity: critical
+          component: projection
+        annotations:
+          summary: "High projection failure rate"
+          description: "Failure rate: {{ $value | humanizePercentage }} (threshold: 5%)"
+
+      - alert: ProjectionDLQActivity
+        expr: rate(dashboard_projection_dlq_sent_total[5m]) > 0
+        for: 1m
+        labels:
+          severity: critical
+          component: projection
+        annotations:
+          summary: "Events being sent to Dead Letter Queue"
+          description: "{{ $value }} events/sec sent to DLQ"
+
+  - name: dashboard_cache
+    interval: 30s
+    rules:
+      # キャッシュヒット率監視
+      - alert: LowCacheHitRate
+        expr: |
+          rate(dashboard_cache_hits_total[5m]) /
+          (rate(dashboard_cache_hits_total[5m]) + rate(dashboard_cache_misses_total[5m])) < 0.5
+        for: 10m
+        labels:
+          severity: warning
+          component: cache
+        annotations:
+          summary: "Low cache hit rate"
+          description: "Cache hit rate is {{ $value | humanizePercentage }} (threshold: 50%)"
+
+  - name: dashboard_database
+    interval: 30s
+    rules:
+      # Materialized Viewリフレッシュ監視
+      - alert: MaterializedViewRefreshFailed
+        expr: rate(dashboard_materialized_view_refresh_total{status="failure"}[5m]) > 0
+        for: 1m
+        labels:
+          severity: critical
+          component: database
+        annotations:
+          summary: "Materialized view refresh is failing"
+          description: "Refresh failures detected in the last 5 minutes"
+
+      - alert: MaterializedViewRefreshSlow
+        expr: dashboard_materialized_view_refresh_duration_seconds > 10
+        for: 5m
+        labels:
+          severity: warning
+          component: database
+        annotations:
+          summary: "Materialized view refresh is slow"
+          description: "Refresh duration: {{ $value }}s (threshold: 10s)"
+
+      # データベース接続プール監視
+      - alert: DatabaseConnectionPoolExhausted
+        expr: dashboard_db_connection_pool_idle / dashboard_db_connection_pool_size < 0.1
+        for: 5m
+        labels:
+          severity: critical
+          component: database
+        annotations:
+          summary: "Database connection pool nearly exhausted"
+          description: "Only {{ $value | humanizePercentage }} connections idle"
+
+  - name: dashboard_kafka
+    interval: 30s
+    rules:
+      # Kafka Consumer Lag監視
+      - alert: HighKafkaConsumerLag
+        expr: dashboard_kafka_consumer_lag > 1000
+        for: 5m
+        labels:
+          severity: warning
+          component: kafka
+        annotations:
+          summary: "High Kafka consumer lag"
+          description: "Consumer lag is {{ $value }} messages on {{ $labels.topic }}"
+
+      - alert: KafkaConsumerErrors
+        expr: rate(dashboard_kafka_consumer_errors_total[5m]) > 0.1
+        for: 2m
+        labels:
+          severity: warning
+          component: kafka
+        annotations:
+          summary: "Kafka consumer errors detected"
+          description: "Error rate: {{ $value }}/sec on {{ $labels.topic }}"
 ```
 
 ### 11.2 ヘルスチェック
@@ -1281,9 +2167,360 @@ export class DashboardHealthController {
 }
 ```
 
-## 12. まとめ
+## 12. バックアップ・災害復旧戦略（MEDIUM PRIORITY）
 
-### 12.1 主要な設計決定
+### 12.1 バックアップ方針
+
+**対象データ**:
+
+- Dashboard Read Model（PostgreSQL）
+- Materialized View統計データ
+- Kafka Event Stream（オプション）
+
+**バックアップ頻度**:
+
+- Read Model: 毎日1回（深夜2時）
+- Materialized View: バックアップ不要（Read Modelから再生成可能）
+- Event Stream: 24時間保持期間内は自動保持
+
+### 12.2 PostgreSQL Read Modelバックアップ
+
+#### 12.2.1 バックアップスクリプト
+
+```bash
+#!/bin/bash
+# backup-dashboard-readmodel.sh
+
+set -e
+
+# 環境変数
+BACKUP_DIR="/backups/dashboard"
+RETENTION_DAYS=7
+POSTGRES_HOST="${POSTGRES_HOST:-localhost}"
+POSTGRES_PORT="${POSTGRES_PORT:-5432}"
+POSTGRES_USER="${POSTGRES_USER:-postgres}"
+POSTGRES_DB="${POSTGRES_DB:-system_board}"
+S3_BUCKET="${S3_BUCKET:-system-board-backups}"
+
+# バックアップディレクトリ作成
+mkdir -p "${BACKUP_DIR}"
+
+# タイムスタンプ
+TIMESTAMP=$(date +%Y%m%d-%H%M%S)
+BACKUP_FILE="${BACKUP_DIR}/dashboard-${TIMESTAMP}.dump"
+
+echo "Starting Dashboard Read Model backup at ${TIMESTAMP}"
+
+# PostgreSQLバックアップ（Dashboard関連テーブルのみ）
+pg_dump \
+  -h "${POSTGRES_HOST}" \
+  -p "${POSTGRES_PORT}" \
+  -U "${POSTGRES_USER}" \
+  -d "${POSTGRES_DB}" \
+  --table=dashboard_system_view \
+  --table=dashboard_statistics \
+  -F c \
+  -f "${BACKUP_FILE}"
+
+if [ $? -eq 0 ]; then
+  echo "Backup completed successfully: ${BACKUP_FILE}"
+
+  # 圧縮
+  gzip "${BACKUP_FILE}"
+  BACKUP_FILE="${BACKUP_FILE}.gz"
+
+  # S3へアップロード
+  if [ -n "${S3_BUCKET}" ]; then
+    aws s3 cp "${BACKUP_FILE}" \
+      "s3://${S3_BUCKET}/dashboard/$(date +%Y/%m/%d)/" \
+      --storage-class STANDARD_IA
+
+    if [ $? -eq 0 ]; then
+      echo "Backup uploaded to S3: s3://${S3_BUCKET}/dashboard/$(date +%Y/%m/%d)/"
+    else
+      echo "ERROR: Failed to upload backup to S3"
+      exit 1
+    fi
+  fi
+
+  # 古いローカルバックアップ削除（7日以上前）
+  find "${BACKUP_DIR}" -name "dashboard-*.dump.gz" -mtime +${RETENTION_DAYS} -delete
+  echo "Old backups older than ${RETENTION_DAYS} days deleted"
+
+else
+  echo "ERROR: Backup failed"
+  exit 1
+fi
+
+echo "Backup process completed"
+```
+
+#### 12.2.2 Kubernetes CronJob設定
+
+```yaml
+# k8s/dashboard-backup-cronjob.yaml
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: dashboard-backup
+  namespace: system-board
+spec:
+  schedule: "0 2 * * *"  # 毎日午前2時
+  successfulJobsHistoryLimit: 3
+  failedJobsHistoryLimit: 3
+  concurrencyPolicy: Forbid  # 同時実行を禁止
+  jobTemplate:
+    spec:
+      template:
+        spec:
+          containers:
+          - name: backup
+            image: postgres:14
+            command: ["/scripts/backup-dashboard-readmodel.sh"]
+            env:
+            - name: POSTGRES_HOST
+              value: "postgresql-service"
+            - name: POSTGRES_PORT
+              value: "5432"
+            - name: POSTGRES_USER
+              valueFrom:
+                secretKeyRef:
+                  name: postgres-credentials
+                  key: username
+            - name: PGPASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: postgres-credentials
+                  key: password
+            - name: POSTGRES_DB
+              value: "system_board"
+            - name: S3_BUCKET
+              value: "system-board-backups"
+            - name: AWS_ACCESS_KEY_ID
+              valueFrom:
+                secretKeyRef:
+                  name: aws-credentials
+                  key: access_key_id
+            - name: AWS_SECRET_ACCESS_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: aws-credentials
+                  key: secret_access_key
+            - name: AWS_DEFAULT_REGION
+              value: "ap-northeast-1"
+            volumeMounts:
+            - name: backup-scripts
+              mountPath: /scripts
+            - name: backup-storage
+              mountPath: /backups
+          volumes:
+          - name: backup-scripts
+            configMap:
+              name: backup-scripts
+              defaultMode: 0755
+          - name: backup-storage
+            persistentVolumeClaim:
+              claimName: backup-pvc
+          restartPolicy: OnFailure
+```
+
+### 12.3 リストア手順
+
+#### 12.3.1 Read Modelリストアスクリプト
+
+```bash
+#!/bin/bash
+# restore-dashboard-readmodel.sh
+
+set -e
+
+# 引数チェック
+if [ $# -ne 1 ]; then
+  echo "Usage: $0 <backup-file.dump.gz>"
+  exit 1
+fi
+
+BACKUP_FILE=$1
+POSTGRES_HOST="${POSTGRES_HOST:-localhost}"
+POSTGRES_PORT="${POSTGRES_PORT:-5432}"
+POSTGRES_USER="${POSTGRES_USER:-postgres}"
+POSTGRES_DB="${POSTGRES_DB:-system_board}"
+
+echo "Starting Dashboard Read Model restore from ${BACKUP_FILE}"
+
+# バックアップファイル存在チェック
+if [ ! -f "${BACKUP_FILE}" ]; then
+  echo "ERROR: Backup file not found: ${BACKUP_FILE}"
+  exit 1
+fi
+
+# 解凍（必要に応じて）
+if [[ "${BACKUP_FILE}" == *.gz ]]; then
+  echo "Decompressing backup file..."
+  gunzip -c "${BACKUP_FILE}" > /tmp/dashboard-restore.dump
+  RESTORE_FILE="/tmp/dashboard-restore.dump"
+else
+  RESTORE_FILE="${BACKUP_FILE}"
+fi
+
+# 既存テーブルを削除（警告）
+echo "WARNING: This will DROP existing dashboard tables!"
+read -p "Continue? (yes/no): " CONFIRM
+
+if [ "${CONFIRM}" != "yes" ]; then
+  echo "Restore cancelled"
+  exit 0
+fi
+
+# テーブル削除
+psql -h "${POSTGRES_HOST}" -p "${POSTGRES_PORT}" -U "${POSTGRES_USER}" -d "${POSTGRES_DB}" <<EOF
+DROP MATERIALIZED VIEW IF EXISTS dashboard_statistics CASCADE;
+DROP TABLE IF EXISTS dashboard_system_view CASCADE;
+EOF
+
+# リストア実行
+pg_restore \
+  -h "${POSTGRES_HOST}" \
+  -p "${POSTGRES_PORT}" \
+  -U "${POSTGRES_USER}" \
+  -d "${POSTGRES_DB}" \
+  -v \
+  "${RESTORE_FILE}"
+
+if [ $? -eq 0 ]; then
+  echo "Restore completed successfully"
+
+  # Materialized View再作成（必要に応じて）
+  echo "Recreating materialized view..."
+  psql -h "${POSTGRES_HOST}" -p "${POSTGRES_PORT}" -U "${POSTGRES_USER}" -d "${POSTGRES_DB}" \
+    -f /scripts/create-materialized-view.sql
+
+  # 初回リフレッシュ
+  psql -h "${POSTGRES_HOST}" -p "${POSTGRES_PORT}" -U "${POSTGRES_USER}" -d "${POSTGRES_DB}" \
+    -c "REFRESH MATERIALIZED VIEW dashboard_statistics;"
+
+  echo "Materialized view recreated and refreshed"
+else
+  echo "ERROR: Restore failed"
+  exit 1
+fi
+
+# 一時ファイル削除
+rm -f /tmp/dashboard-restore.dump
+
+echo "Restore process completed"
+```
+
+### 12.4 災害復旧（DR）戦略
+
+#### 12.4.1 RTO/RPO目標
+
+| 項目 | 目標 | 説明 |
+|------|------|------|
+| RTO (Recovery Time Objective) | 4時間 | システム復旧までの目標時間 |
+| RPO (Recovery Point Objective) | 24時間 | データ損失許容範囲 |
+
+**理由**:
+
+- Dashboard Read Modelは Event Sourcing の投影データであり、Event Storeから完全再構築可能
+- 最悪の場合、Event Storeからのフル再投影で復旧（時間はかかるが、データ損失なし）
+- バックアップは高速復旧のための補助手段
+
+#### 12.4.2 復旧手順
+
+**シナリオ1: Read Model破損**:
+
+1. バックアップからリストア（所要時間: 30分）
+2. 最終バックアップ以降のイベントを再投影（所要時間: 1-2時間）
+3. Materialized Viewリフレッシュ（所要時間: 5分）
+4. ヘルスチェック確認（所要時間: 5分）
+
+**合計復旧時間**: 約2-3時間（RTO目標: 4時間内）
+
+**シナリオ2: データベース全損**:
+
+1. 新しいPostgreSQLインスタンス立ち上げ（所要時間: 30分）
+2. スキーマ作成（所要時間: 5分）
+3. Event Storeからフル再投影（所要時間: 4-6時間）※イベント数による
+4. ヘルスチェック確認（所要時間: 5分）
+
+**合計復旧時間**: 約5-7時間（RTO目標超過の可能性あり）
+
+**対策**: 定期的なバックアップ＋増分投影により、フル再投影を回避
+
+#### 12.4.3 DR訓練計画
+
+**四半期ごとの訓練**:
+
+```yaml
+# DR訓練チェックリスト
+dr_drill:
+  frequency: quarterly
+  steps:
+    - name: "バックアップリストア訓練"
+      description: "本番環境のバックアップからステージング環境へリストア"
+      expected_duration: "30分"
+
+    - name: "Event再投影訓練"
+      description: "Event Storeから特定期間のイベントを再投影"
+      expected_duration: "1時間"
+
+    - name: "フェイルオーバー訓練"
+      description: "Primary DB障害を想定したフェイルオーバー"
+      expected_duration: "15分"
+
+    - name: "監視アラート確認"
+      description: "障害検知からアラート発報までの時間確認"
+      expected_duration: "10分"
+```
+
+### 12.5 監視・アラート（DR観点）
+
+```yaml
+# prometheus-dr-alerts.yml
+groups:
+  - name: dashboard_dr
+    interval: 60s
+    rules:
+      # バックアップ失敗監視
+      - alert: DashboardBackupFailed
+        expr: |
+          time() - dashboard_last_backup_timestamp_seconds > 86400 * 2
+        for: 1h
+        labels:
+          severity: critical
+          component: backup
+        annotations:
+          summary: "Dashboard backup is overdue"
+          description: "Last successful backup was {{ $value | humanizeDuration }} ago"
+
+      # Event投影遅延監視（DR観点）
+      - alert: ProjectionSeverelyLagging
+        expr: dashboard_projection_lag_seconds > 3600
+        for: 10m
+        labels:
+          severity: critical
+          component: dr
+        annotations:
+          summary: "Projection lag exceeds 1 hour"
+          description: "Projection lag is {{ $value }}s. May impact RPO."
+
+      # Read Model健全性監視
+      - alert: ReadModelOutOfSync
+        expr: |
+          (time() - dashboard_system_view_last_updated_seconds) > 600
+        for: 5m
+        labels:
+          severity: warning
+          component: dr
+        annotations:
+          summary: "Read Model may be out of sync"
+          description: "No updates to Read Model for {{ $value }}s"
+```
+
+## 13. まとめ
+
+### 13.1 主要な設計決定
 
 | 決定事項 | 選択 | 理由 |
 |---------|------|------|
@@ -1349,7 +2586,155 @@ export class DashboardHealthController {
 
 ---
 
+## 13. レビュー結果と改善内容
+
+### 13.1 専門家レビュー実施日
+
+**レビュー実施日**: 2025-09-30
+**レビュー担当者**:
+
+- Backend Developer
+- Database Architect
+- Frontend Developer
+- Security Engineer
+- DevOps Engineer
+
+### 13.2 Critical対応（即時実装必須）
+
+| # | 問題点 | 対応内容 | 実装箇所 |
+|---|--------|---------|---------|
+| 1 | WebSocket購読時の認可チェック欠如 | `canAccessSystem()`による権限確認、UUID検証、監査ログ追加 | 5.2.2節（行665-715） |
+| 2 | Event Projectionリトライ戦略未実装 | 指数バックオフリトライ（最大3回）、Dead Letter Queue実装 | 4.2節（行507-618） |
+| 3 | Kafka単一障害点（replication_factor=1） | replication_factor=3、min.insync.replicas=2に変更 | 5.1.1節（行640-668） |
+
+### 13.3 High Priority対応（短期実装推奨）
+
+| # | 問題点 | 対応内容 | 実装箇所 |
+|---|--------|---------|---------|
+| 1 | エラーハンドリング不足 | Query Handler全体にtry-catch、メトリクス計測、カスタムエラークラス追加 | 3.1.3節（行243-355） |
+| 2 | DB複合インデックス不足 | 複合インデックス3種追加、ソート用インデックス追加 | 4.1.1節（行479-495） |
+| 3 | Materialized View更新遅延 | 5分→30秒リフレッシュに変更、CONCURRENT REFRESH対応 | 4.1.1節（行521-527） |
+| 4 | WebSocket負荷分散未対応 | Redis Adapter実装、複数インスタンス対応 | 5.2.1節（行804-839） |
+| 5 | フロントエンド再接続戦略なし | 自動再接続、接続状態管理、エラーハンドリング追加 | 5.3.1節（行1007-1112） |
+
+### 13.4 Medium Priority対応（中期実装推奨）
+
+| # | 問題点 | 対応内容 | 実装箇所 |
+|---|--------|---------|---------|
+| 1 | 監視メトリクス不足 | 包括的Prometheusメトリクス実装（25種類）、アラートルール追加 | 11.1節（行1614-2004） |
+| 2 | データマスキング不完全 | セキュリティ分類別マスキング強化、統計情報マスキング追加 | 8.2.1節（行1442-1583） |
+| 3 | バックアップ戦略未定義 | 自動バックアップ、リストア手順、DR戦略（RTO/RPO）確立 | 12節（行2170-2516） |
+
+### 13.5 主な改善内容サマリー
+
+**セキュリティ強化**:
+
+- ✅ WebSocket購読時の認可チェック追加
+- ✅ 不正アクセス試行の監査ログ記録
+- ✅ UUID形式検証によるインジェクション対策
+
+**信頼性向上**:
+
+- ✅ Event Projectionのリトライ機構（指数バックオフ）
+- ✅ Dead Letter Queueによる失敗イベント保存
+- ✅ Microsoft Teams緊急アラート連携
+
+**高可用性確保**:
+
+- ✅ Kafka replication_factor=3（3ノード冗長化）
+- ✅ min.insync.replicas=2（書き込み保証）
+- ✅ Redis Adapterによる複数インスタンス対応
+
+**パフォーマンス最適化**:
+
+- ✅ 複合インデックス追加（複数条件フィルタ高速化）
+- ✅ Materialized View 30秒リフレッシュ（リアルタイム性向上）
+- ✅ メトリクス計測による継続的最適化
+
+**フロントエンド体験向上**:
+
+- ✅ 自動再接続戦略（最大5回リトライ）
+- ✅ 接続状態可視化（connected/disconnected/reconnecting）
+- ✅ エラーハンドリングとユーザー通知
+
+**運用・保守性向上（MEDIUM PRIORITY追加）**:
+
+- ✅ 包括的メトリクス実装（25種類のPrometheusメトリクス）
+- ✅ Prometheusアラートルール設定（15種類）
+- ✅ 拡張データマスキング（4段階のセキュリティレベル対応）
+- ✅ 自動バックアップ戦略（毎日、S3保存）
+- ✅ DR戦略確立（RTO: 4時間、RPO: 24時間）
+
+### 13.6 次のアクションアイテム
+
+#### Critical対応（即時実装）
+
+**Backend Developer向け**:
+
+- ✅ WebSocket subscribe認可チェック実装
+- ✅ Event Projection リトライ/DLQ実装
+- ✅ エラーハンドリング全面追加
+
+**DevOps Engineer向け**:
+
+- ✅ Kafka replication_factor=3設定
+
+#### High Priority対応（短期実装）
+
+**Backend Developer向け**:
+
+1. ✅ エラーハンドリング実装（Query Handler、Projection Service）
+2. ✅ Dead Letter Queue Service実装
+3. ⬜ カスタムエラークラスのテスト追加
+
+**Frontend Developer向け**:
+
+1. ✅ 再接続戦略付きWebSocketサービス実装
+2. ⬜ 接続状態UIコンポーネント実装
+3. ⬜ エラー通知Toast/Modal実装
+
+**Database Architect向け**:
+
+1. ✅ 複合インデックス追加（本番環境はCONCURRENTLY使用）
+2. ✅ Materialized View 30秒リフレッシュ設定
+3. ⬜ インデックス使用状況監視クエリ実装
+
+**DevOps Engineer向け**:
+
+1. ✅ Redis Adapter設定追加
+2. ⬜ WebSocket負荷分散テスト
+
+#### Medium Priority対応（中期実装）
+
+**Backend Developer向け**:
+
+1. ⬜ 包括的メトリクス実装
+2. ⬜ データマスキングサービス統合
+
+**Database Architect向け**:
+
+1. ⬜ バックアップスクリプト実装
+2. ⬜ リストア手順検証
+
+**Security Engineer向け**:
+
+1. ✅ WebSocket認可チェック実装
+2. ✅ 拡張データマスキング設計
+3. ⬜ 監査ログ永続化実装
+4. ⬜ セキュリティアラート設定（Microsoft Teams連携）
+
+**DevOps Engineer向け**:
+
+1. ✅ Kafka Topic作成（replication_factor=3）
+2. ⬜ Prometheus監視ルール設定
+3. ⬜ Grafanaダッシュボード作成
+4. ⬜ バックアップCronJob設定
+5. ⬜ DR訓練実施
+
+---
+
 **設計完了日**: 2025-09-30
 **設計者**: Software Architect
-**レビュー推奨者**: Backend Developer, Database Architect, Frontend Developer
+**レビュー実施日**: 2025-09-30
+**レビュー担当者**: Backend Developer, Database Architect, Frontend Developer, Security Engineer, DevOps Engineer
 **次回更新**: 実装フェーズ完了後のフィードバック反映
