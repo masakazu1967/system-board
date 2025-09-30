@@ -214,6 +214,9 @@ sequenceDiagram
 ```typescript
 import { IQuery } from '@nestjs/cqrs';
 import { UserId } from '@shared/domain/UserId';
+import { SecureQuery } from '@shared/security/interfaces/SecureQuery';
+import { UserContext } from '@shared/security/UserContext';
+import { SecurityClassification } from '@shared/security/enums/SecurityClassification';
 
 export interface PaginationOptions {
   page: number;
@@ -222,30 +225,62 @@ export interface PaginationOptions {
   sortOrder?: 'asc' | 'desc';
 }
 
-export class ViewDashboardQuery implements IQuery {
+export class ViewDashboardQuery implements IQuery, SecureQuery {
+  public readonly userContext: UserContext;
+  public readonly securityClassification: SecurityClassification = SecurityClassification.INTERNAL;
+
   constructor(
     public readonly queryId: string,
     public readonly userId: UserId,
     public readonly filters?: DashboardFilters,
     public readonly viewMode: ViewMode = 'overview',
     public readonly pagination?: PaginationOptions,
-  ) {}
+  ) {
+    // AOPによる認可チェックのためのUserContext設定
+    this.userContext = new UserContext({
+      userId: userId.getValue(),
+      sessionId: undefined, // Controllerでセット
+      ipAddress: undefined, // Controllerでセット
+      userAgent: undefined, // Controllerでセット
+    });
+  }
+
+  // SecureQueryインターフェース実装
+  getSecurityMetadata(): SecurityMetadata {
+    return {
+      minimumClassification: SecurityClassification.INTERNAL,
+      minimumRole: UserRole.OPERATOR,
+      auditLevel: AuditLevel.STANDARD,
+      requiresAuthorization: true,
+      requiresSessionValidation: true,
+    };
+  }
+
+  // UserContext設定（Controllerから呼び出し）
+  setUserContext(userContext: UserContext): void {
+    Object.assign(this.userContext, userContext);
+  }
 }
 ```
 
 #### 3.1.3 Query Handler実装
 
+**重要**: 認可チェックはAOP（SecurityInterceptor）により自動適用されるため、Query Handler内では実装不要。
+
 ```typescript
 import { IQueryHandler, QueryHandler } from '@nestjs/cqrs';
 import { DashboardReadModelRepository } from '../infrastructure/DashboardReadModelRepository';
 import { DashboardResponse } from './DashboardResponse';
+import { SecureQuery } from '@shared/security/decorators/SecureQuery';
+import { SecurityClassification } from '@shared/security/enums/SecurityClassification';
+import { UserRole } from '@shared/security/enums/UserRole';
 
 @QueryHandler(ViewDashboardQuery)
+@SecureQuery(SecurityClassification.INTERNAL, UserRole.OPERATOR) // AOP: 認可チェック自動適用
 export class ViewDashboardQueryHandler implements IQueryHandler<ViewDashboardQuery> {
   constructor(
     private readonly dashboardRepository: DashboardReadModelRepository,
     private readonly cacheService: CacheService,
-    private readonly authorizationService: AuthorizationService,
     private readonly logger: Logger,
     private readonly metricsService: DashboardMetricsService,
   ) {}
@@ -254,10 +289,9 @@ export class ViewDashboardQueryHandler implements IQueryHandler<ViewDashboardQue
     const timer = this.metricsService.queryDuration.startTimer();
 
     try {
-      // 1. 認可チェック（エラー時はそのままthrow）
-      await this.authorizationService.ensureCanViewDashboard(query.userId);
+      // 認可チェックはSecurityInterceptorが自動実行するため不要
 
-      // 2. キャッシュ確認（エラーは無視してDBフォールバック）
+      // 1. キャッシュ確認（エラーは無視してDBフォールバック）
       const cacheKey = this.buildCacheKey(query);
       try {
         const cachedData = await this.cacheService.get<DashboardResponse>(cacheKey);
@@ -354,6 +388,85 @@ export class ProjectionError extends Error {
   }
 }
 ```
+
+#### 3.1.4 Controller実装（AOP統合）
+
+**重要**: Controllerで UserContext を設定し、AOPのSecurityInterceptorが自動的に認可チェックを実行する。
+
+```typescript
+import { Controller, Get, Query, Req, UseInterceptors } from '@nestjs/common';
+import { QueryBus, EventBus } from '@nestjs/cqrs';
+import { SecurityInterceptor } from '@shared/security/interceptors/SecurityInterceptor';
+import { CurrentUser } from '@shared/security/decorators/CurrentUser';
+import { User } from '@shared/security/User';
+import { UserContext } from '@shared/security/UserContext';
+import { ViewDashboardQuery } from './queries/ViewDashboardQuery';
+import { DashboardViewRequested } from './events/DashboardViewRequested';
+import { v4 as uuidv4 } from 'uuid';
+
+@Controller('api/dashboard')
+@UseInterceptors(SecurityInterceptor) // AOP: SecurityInterceptor適用
+export class DashboardController {
+  constructor(
+    private readonly queryBus: QueryBus,
+    private readonly eventBus: EventBus,
+  ) {}
+
+  @Get()
+  async getDashboard(
+    @CurrentUser() user: User, // Auth0認証済みユーザー
+    @Req() request: Request,
+    @Query('filters') filters?: string,
+    @Query('viewMode') viewMode?: string,
+  ): Promise<DashboardResponse> {
+    // 1. UserContext構築（AOP用）
+    const userContext = new UserContext({
+      userId: user.id,
+      sessionId: request.session?.id, // HTTPセッションID
+      ipAddress: request.ip,
+      userAgent: request.headers['user-agent'],
+      roles: user.roles,
+    });
+
+    // 2. Query作成
+    const query = new ViewDashboardQuery(
+      uuidv4(), // queryId
+      UserId.create(user.id),
+      filters ? JSON.parse(filters) : undefined,
+      viewMode as ViewMode,
+      undefined, // pagination
+    );
+
+    // 3. UserContextをQueryに設定（AOP用）
+    query.setUserContext(userContext);
+
+    // 4. Technical Event発行（DashboardViewRequested）
+    const event = new DashboardViewRequested({
+      userId: UserId.create(user.id),
+      sessionId: request.session?.id,
+      filters: query.filters,
+      viewMode: query.viewMode,
+      metadata: {
+        userAgent: request.headers['user-agent'],
+        ipAddress: request.ip,
+        requestId: request.id,
+      },
+    });
+    await this.eventBus.publish(event);
+
+    // 5. Query実行（SecurityInterceptorが認可チェックを自動実行）
+    return await this.queryBus.execute(query);
+  }
+}
+```
+
+**AOPフロー**:
+1. Controller が `ViewDashboardQuery` を作成し、`UserContext` を設定
+2. `queryBus.execute()` が呼ばれる
+3. **SecurityInterceptor** が自動的に介入
+4. **SecurityAspect.beforeExecution()** が認可チェック実行
+5. 認可成功 → Query Handler実行
+6. 認可失敗 → UnauthorizedAccessError throw
 
 ### 3.2 DashboardResponse 型定義
 
