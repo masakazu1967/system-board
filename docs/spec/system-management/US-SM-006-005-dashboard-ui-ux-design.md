@@ -1507,7 +1507,7 @@ const BREAKPOINTS = {
 
 ## 8. セキュリティ設計
 
-### 9.1 設計方針
+### 8.1 設計方針
 
 製造業向けセキュリティリスク管理システムとして、**情報漏洩防止を最優先**とし、ISO 27001、NIST Cybersecurity Framework準拠を実現します。
 
@@ -1518,7 +1518,7 @@ const BREAKPOINTS = {
 3. **可用性**: 認証失敗時の適切なフォールバック
 4. **説明責任**: すべてのユーザーアクションを監査ログに記録
 
-### 9.2 RBAC (Role-Based Access Control) 設計
+### 8.2 RBAC (Role-Based Access Control) 設計
 
 #### 8.2.1 ロール定義
 
@@ -1671,7 +1671,7 @@ function SystemTableRow({ system, user }: { system: SystemSummary; user: User })
 }
 ```
 
-### 9.3 セキュリティ分類制御
+### 8.3 セキュリティ分類制御
 
 #### 8.3.1 セキュリティ分類レベル
 
@@ -1855,7 +1855,7 @@ function SecurityClassificationBadge({
 }
 ```
 
-### 9.4 認証・認可UI設計
+### 8.4 認証・認可UI設計
 
 #### 8.4.1 セッション管理
 
@@ -2185,7 +2185,7 @@ function ReauthenticationModal({
 }
 ```
 
-### 9.5 監査ログ設計
+### 8.5 監査ログ設計
 
 #### 8.5.1 監査ログ対象操作
 
@@ -2232,8 +2232,16 @@ interface AuditLogEntry {
  * 監査ログ記録サービス
  */
 class AuditLogService {
+  private pendingLogs: AuditLogEntry[] = [];
+  private retryInterval: NodeJS.Timeout | null = null;
+
   /**
    * 監査ログを記録
+   *
+   * セキュリティ要件:
+   * - クライアント側への永続化は禁止（改ざんリスク）
+   * - オフライン時はメモリバッファに保持し、再接続時に送信
+   * - 5分以上オフラインの場合は警告表示
    */
   async log(entry: Omit<AuditLogEntry, 'id' | 'timestamp'>): Promise<void> {
     const logEntry: AuditLogEntry = {
@@ -2242,8 +2250,73 @@ class AuditLogService {
       ...entry,
     };
 
-    // バックエンドAPIに送信
-    await api.post('/audit/log', logEntry);
+    try {
+      // バックエンドAPIに送信
+      await api.post('/audit/log', logEntry);
+
+      // 送信成功時、保留中のログも送信試行
+      if (this.pendingLogs.length > 0) {
+        await this.flushPendingLogs();
+      }
+    } catch (error) {
+      // 送信失敗時はメモリバッファに保持（最大50件）
+      console.warn('監査ログの送信に失敗しました。リトライします。', error);
+
+      this.pendingLogs.push(logEntry);
+
+      // 最大50件まで保持（超過分は古いものから破棄）
+      if (this.pendingLogs.length > 50) {
+        console.error('監査ログバッファがオーバーフローしました。古いログを破棄します。');
+        this.pendingLogs.shift();
+      }
+
+      // リトライタイマー開始（30秒間隔）
+      if (!this.retryInterval) {
+        this.retryInterval = setInterval(() => this.flushPendingLogs(), 30000);
+      }
+
+      // 5分以上オフラインの場合は警告
+      const oldestLog = this.pendingLogs[0];
+      if (oldestLog) {
+        const age = Date.now() - oldestLog.timestamp.getTime();
+        if (age > 5 * 60 * 1000) {
+          this.showOfflineWarning();
+        }
+      }
+    }
+  }
+
+  /**
+   * 保留中のログをフラッシュ
+   */
+  private async flushPendingLogs(): Promise<void> {
+    if (this.pendingLogs.length === 0) return;
+
+    try {
+      // 保留中のログを一括送信
+      await api.post('/audit/log/batch', { logs: this.pendingLogs });
+
+      console.info(`${this.pendingLogs.length}件の保留中監査ログを送信しました。`);
+
+      // 送信成功時はバッファクリア
+      this.pendingLogs = [];
+
+      // リトライタイマー停止
+      if (this.retryInterval) {
+        clearInterval(this.retryInterval);
+        this.retryInterval = null;
+      }
+    } catch (error) {
+      console.warn('保留中監査ログの送信に失敗しました。リトライを継続します。', error);
+    }
+  }
+
+  /**
+   * オフライン警告を表示
+   */
+  private showOfflineWarning(): void {
+    // TODO: 実装時に適切なトースト通知で警告表示
+    console.warn('監査ログの送信に5分以上失敗しています。ネットワーク接続を確認してください。');
   }
 }
 
@@ -2376,7 +2449,7 @@ interface AuditLogDashboard {
 }
 ```
 
-### 9.6 XSS対策とセキュリティヘッダー
+### 8.6 XSS対策とセキュリティヘッダー
 
 #### 8.6.1 入力検証・サニタイゼーション
 
@@ -2556,7 +2629,7 @@ function setSecureCookie(
 }
 ```
 
-### 9.7 エラーメッセージの情報漏洩対策
+### 8.7 エラーメッセージの情報漏洩対策
 
 ```typescript
 /**
@@ -2642,7 +2715,7 @@ function ErrorDisplay({ error }: { error: ErrorMessage }) {
 }
 ```
 
-### 9.8 OWASP Top 10 対策チェックリスト
+### 8.8 OWASP Top 10 対策チェックリスト
 
 | OWASP Top 10 | 脅威 | 対策 | 実装箇所 |
 |-------------|------|------|---------|
@@ -2851,7 +2924,7 @@ const COLOR_CONTRAST = {
 
 ## 10. パフォーマンス最適化
 
-### 9.1 仮想スクロール
+### 10.1 仮想スクロール
 
 大量データ表示時は仮想スクロールを使用:
 
@@ -2897,7 +2970,7 @@ const VirtualizedTable: React.FC<{ data: SystemSummary[] }> = ({ data }) => {
 };
 ```
 
-### 9.2 レンダリング最適化
+### 10.2 レンダリング最適化
 
 ```typescript
 // React.memo でメモ化
@@ -2933,7 +3006,7 @@ const DashboardTable: React.FC = () => {
 };
 ```
 
-### 9.3 画像最適化
+### 10.3 画像最適化
 
 ```typescript
 // アイコンはSVGスプライトを使用
@@ -2950,7 +3023,7 @@ const DashboardTable: React.FC = () => {
 />
 ```
 
-### 9.4 バンドルサイズ最適化
+### 10.4 バンドルサイズ最適化
 
 ```typescript
 // 動的インポート
@@ -3015,7 +3088,20 @@ if (showAdvancedFilters) {
 - [ ] カードリスト表示 (モバイル)
 - [ ] フィルターモーダル (モバイル)
 
-### フェーズ7: アクセシビリティ
+### フェーズ7: セキュリティ実装
+
+- [ ] RBAC サービス実装 (5ロール)
+- [ ] セキュリティ分類フィルタリング (4レベル)
+- [ ] セッション管理 (30分タイムアウト、5分前警告、延長フロー)
+- [ ] 監査ログ統合 (全15操作タイプ)
+- [ ] 入力サニタイゼーション (DOMPurify統合)
+- [ ] CSP ヘッダー設定 (Content Security Policy)
+- [ ] エラーハンドリング (情報漏洩防止)
+- [ ] 再認証フロー (機密操作: データエクスポート、TOP_SECRET アクセス)
+- [ ] セキュリティ分類バッジ表示
+- [ ] Auth0 統合 (OAuth2.0 + JWT)
+
+### フェーズ8: アクセシビリティ
 
 - [ ] ARIA属性追加
 - [ ] スクリーンリーダー対応
@@ -3023,7 +3109,7 @@ if (showAdvancedFilters) {
 - [ ] フォーカスインジケーター
 - [ ] カラーコントラスト確認
 
-### フェーズ8: パフォーマンス最適化
+### フェーズ9: パフォーマンス最適化
 
 - [ ] 仮想スクロール実装
 - [ ] レンダリング最適化
@@ -3031,13 +3117,34 @@ if (showAdvancedFilters) {
 - [ ] バンドルサイズ最適化
 - [ ] キャッシング戦略
 
-### フェーズ9: テスト
+### フェーズ10: セキュリティテスト
+
+- [ ] RBAC 権限マトリクス検証 (全5ロール × 11機能)
+- [ ] セキュリティ分類アクセス制御テスト (4レベル検証)
+- [ ] セッションタイムアウトテスト (30分/警告5分)
+- [ ] 監査ログ記録検証 (全15操作タイプ)
+- [ ] XSS 攻撃耐性テスト (OWASP ZAP)
+- [ ] CSRF トークン検証
+- [ ] 認証バイパステスト (401/403エラー検証)
+- [ ] 情報漏洩テスト (エラーメッセージ検証)
+- [ ] OWASP Top 10 スキャン (Burp Suite / ZAP)
+- [ ] ペネトレーションテスト
+
+### フェーズ11: 統合テスト
 
 - [ ] ユーザビリティテスト
 - [ ] アクセシビリティテスト (WCAG 2.1 AA)
 - [ ] パフォーマンステスト (<2秒)
 - [ ] レスポンシブテスト (全デバイス)
 - [ ] ブラウザ互換性テスト
+
+### フェーズ12: コンプライアンス検証
+
+- [ ] ISO 27001 監査ログ要件確認
+- [ ] NIST Cybersecurity Framework 準拠確認
+- [ ] 製造業セキュリティ基準準拠確認
+- [ ] ペネトレーションテストレポート作成
+- [ ] セキュリティ設計レビュー (Security Engineer最終承認)
 
 ## 12. デザインシステムとの統合
 
