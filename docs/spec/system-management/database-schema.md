@@ -102,23 +102,104 @@ CREATE INDEX idx_system_packages_name_type ON system_packages(package_name, pack
 CREATE INDEX idx_system_packages_security ON system_packages(is_security_compliant);
 ```
 
-### 1.4 system_name_reservations テーブル
+### 1.4 システム名の一意性保証（Redis-based）
 
-システム名の同時登録防止用テーブル
+**設計決定**: PostgreSQLテーブルではなく、**Redis-based同期予約**を採用
 
-```sql
-CREATE TABLE system_name_reservations (
-    name VARCHAR(255) PRIMARY KEY,
-    reserved_at TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT CURRENT_TIMESTAMP,
-    expires_at TIMESTAMP WITH TIME ZONE NOT NULL,
-    reserved_by VARCHAR(255),
+#### 理由
 
-    CHECK (expires_at > reserved_at)
-);
+PostgreSQLテーブルでの予約は以下の問題があります：
 
--- 期限切れレコードの自動削除用インデックス
-CREATE INDEX idx_system_name_reservations_expires_at ON system_name_reservations(expires_at);
+1. **レースコンディションリスク**: Read Model更新が非同期のため、チェックとイベント永続化の間に重複が発生する可能性
+2. **CQRS違反**: コマンド側でRead Modelデータベースに書き込むと、CQRS分離原則に違反
+3. **複雑性**: 分散トランザクションやSagaパターンが必要
+
+#### Redis予約戦略
+
+```typescript
+// Command Handler内での同期予約フロー
+async registerSystem(command: RegisterSystemCommand): Promise<SystemId> {
+  const systemName = command.name.toLowerCase();
+
+  // 1. Redis同期予約（原子的操作）
+  const reserved = await redis.set(
+    `system:name:reservation:${systemName}`,
+    command.aggregateId,
+    'NX',  // Only set if not exists
+    'EX',  // Expiration
+    60     // 60秒TTL
+  );
+
+  if (!reserved) {
+    throw new SystemNameAlreadyExistsException(systemName);
+  }
+
+  try {
+    // 2. イベント永続化
+    await this.eventStore.append(event);
+
+    // 3. 予約を永続化（TTL削除）
+    await redis.persist(`system:name:reservation:${systemName}`);
+
+    return systemId;
+  } catch (error) {
+    // 失敗時は予約をロールバック（TTLで自動削除される）
+    await redis.del(`system:name:reservation:${systemName}`);
+    throw error;
+  }
+}
 ```
+
+#### Redis Key設計
+
+```
+# 一時予約（コマンド処理中）
+Key: system:name:reservation:{systemName}
+Value: {aggregateId}
+TTL: 60秒
+
+# 永続確認（イベント処理完了後）
+Key: system:name:confirmed:{systemName}
+Value: {aggregateId}
+TTL: なし（永続）
+```
+
+#### Redis障害時のフォールバック
+
+```typescript
+try {
+  // Redis優先パス
+  const reserved = await this.redisReservationService.tryReserve(systemName);
+} catch (redisError) {
+  // Redis障害時はPostgreSQLで確認（スロー パス）
+  const exists = await this.systemRepository.existsByName(systemName);
+  if (exists) {
+    throw new SystemNameAlreadyExistsException(systemName);
+  }
+  // 小さなレースコンディションリスクを受け入れて継続
+  this.alertService.triggerAlert('REDIS_DOWN');
+}
+```
+
+#### Redisキャッシュの再構築
+
+```typescript
+// Kurrent DBイベントからRedisキャッシュを再構築
+async rebuildRedisCache(): Promise<void> {
+  const events = await this.kurrentClient.readStream('$ce-System');
+
+  for (const event of events) {
+    if (event.type === 'SystemRegistered') {
+      await redis.set(`system:name:confirmed:${event.data.name}`, event.data.systemId);
+    }
+    if (event.type === 'SystemDecommissioned') {
+      await redis.del(`system:name:confirmed:${event.data.name}`);
+    }
+  }
+}
+```
+
+**注**: PostgreSQLの`systems`テーブルにはUNIQUE制約を保持し、多層防御として機能させます。
 
 ### 1.5 processed_events テーブル
 
@@ -705,8 +786,9 @@ CREATE INDEX idx_system_packages_name_type ON system_packages(package_name, pack
 CREATE INDEX idx_system_packages_security_compliance ON system_packages(is_security_compliant) WHERE is_security_compliant = false;
 CREATE INDEX idx_system_packages_install_date ON system_packages(install_date);
 
--- system_name_reservations テーブルのインデックス
-CREATE INDEX idx_system_name_reservations_expires_at ON system_name_reservations(expires_at);
+-- processed_events テーブルのインデックス（セクション1.5で定義）
+-- CREATE INDEX idx_processed_events_stream ON processed_events(stream_name, event_number);
+-- CREATE INDEX idx_processed_events_type ON processed_events(event_type);
 
 -- 部分インデックス (パフォーマンス最適化)
 CREATE INDEX idx_systems_active_high_criticality ON systems(system_id, name)
@@ -761,21 +843,330 @@ $$ LANGUAGE plpgsql;
 CREATE TRIGGER update_systems_version
     BEFORE UPDATE ON systems
     FOR EACH ROW EXECUTE FUNCTION increment_version_on_update();
-
--- 期限切れ予約の自動削除関数
-CREATE OR REPLACE FUNCTION cleanup_expired_reservations()
-RETURNS void AS $$
-BEGIN
-    DELETE FROM system_name_reservations
-    WHERE expires_at < CURRENT_TIMESTAMP;
-END;
-$$ LANGUAGE plpgsql;
-
--- 定期実行用のスケジュール (PostgreSQL拡張またはcron jobで実行)
--- SELECT cron.schedule('cleanup-reservations', '*/5 * * * *', 'SELECT cleanup_expired_reservations();');
 ```
 
-### 3.3 EventStore DB プロジェクション設定
+**注**: 以前の設計にあった `cleanup_expired_reservations()` 関数は削除されました。
+システム名の一意性保証はRedisで行われ、TTL（Time-To-Live）による自動クリーンアップが機能します。
+
+### 3.3 Redis設計仕様
+
+#### 3.3.1 Redis構成
+
+```yaml
+# Redis Configuration for System Name Reservation
+redis:
+  host: ${REDIS_HOST:-localhost}
+  port: ${REDIS_PORT:-6379}
+  database: 0  # システム名予約専用DB
+
+  # 永続化設定（耐久性確保）
+  persistence:
+    aof: true              # Append-Only File
+    appendfsync: everysec  # 毎秒fsync（パフォーマンスと耐久性のバランス）
+    rdb_snapshots:
+      - save: "900 1"      # 15分で1キー変更
+      - save: "300 10"     # 5分で10キー変更
+      - save: "60 10000"   # 1分で10000キー変更
+
+  # 接続プール
+  pool:
+    min: 10
+    max: 50
+
+  # リトライ戦略
+  retry:
+    max_attempts: 3
+    backoff_ms: 50
+```
+
+#### 3.3.2 システム名予約サービス実装
+
+```typescript
+// redis-name-reservation.service.ts
+@Injectable()
+export class RedisNameReservationService {
+  private readonly RESERVATION_PREFIX = 'system:name:reservation:';
+  private readonly CONFIRMED_PREFIX = 'system:name:confirmed:';
+  private readonly RESERVATION_TTL = 60; // 60秒
+
+  constructor(
+    @Inject('REDIS_CLIENT') private readonly redis: Redis,
+    private readonly logger: Logger
+  ) {}
+
+  /**
+   * システム名を一時予約（原子的操作）
+   * @returns true=予約成功, false=既に存在
+   */
+  async tryReserve(
+    systemName: string,
+    aggregateId: string
+  ): Promise<boolean> {
+    const key = `${this.RESERVATION_PREFIX}${systemName}`;
+    const confirmedKey = `${this.CONFIRMED_PREFIX}${systemName}`;
+
+    // 1. 確定済み名前をチェック
+    const isConfirmed = await this.redis.exists(confirmedKey);
+    if (isConfirmed) {
+      return false; // 既に登録済み
+    }
+
+    // 2. 原子的に予約（NX=存在しない場合のみセット）
+    const result = await this.redis.set(
+      key,
+      JSON.stringify({
+        aggregateId,
+        reservedAt: new Date().toISOString()
+      }),
+      'NX',  // Only set if not exists
+      'EX',  // Set expiry
+      this.RESERVATION_TTL
+    );
+
+    return result === 'OK';
+  }
+
+  /**
+   * 予約を確定（TTL削除して永続化）
+   */
+  async confirm(systemName: string): Promise<void> {
+    const reservationKey = `${this.RESERVATION_PREFIX}${systemName}`;
+    const confirmedKey = `${this.CONFIRMED_PREFIX}${systemName}`;
+
+    // Redis Pipeline（トランザクション的実行）
+    const pipeline = this.redis.pipeline();
+
+    // 予約キーから確定キーへ移動
+    pipeline.rename(reservationKey, confirmedKey);
+    pipeline.persist(confirmedKey); // TTL削除
+
+    await pipeline.exec();
+
+    this.logger.debug('System name confirmed', { systemName });
+  }
+
+  /**
+   * 予約を解放（エラー時のロールバック）
+   */
+  async release(systemName: string): Promise<void> {
+    const key = `${this.RESERVATION_PREFIX}${systemName}`;
+    await this.redis.del(key);
+
+    this.logger.debug('System name reservation released', { systemName });
+  }
+
+  /**
+   * システム廃止時の名前解放
+   */
+  async releaseConfirmed(systemName: string): Promise<void> {
+    const confirmedKey = `${this.CONFIRMED_PREFIX}${systemName}`;
+    await this.redis.del(confirmedKey);
+
+    this.logger.info('System name released from confirmed list', { systemName });
+  }
+
+  /**
+   * 名前の利用可能性チェック
+   */
+  async isAvailable(systemName: string): Promise<boolean> {
+    const reservationExists = await this.redis.exists(
+      `${this.RESERVATION_PREFIX}${systemName}`
+    );
+    const confirmedExists = await this.redis.exists(
+      `${this.CONFIRMED_PREFIX}${systemName}`
+    );
+
+    return !reservationExists && !confirmedExists;
+  }
+}
+```
+
+#### 3.3.3 Redisキャッシュ復旧サービス
+
+```typescript
+// redis-recovery.service.ts
+@Injectable()
+export class RedisRecoveryService {
+  constructor(
+    private readonly kurrentClient: KurrentDBClient,
+    private readonly reservationService: RedisNameReservationService,
+    private readonly logger: Logger
+  ) {}
+
+  /**
+   * アプリケーション起動時にRedisキャッシュを再構築
+   */
+  @OnApplicationBootstrap()
+  async onApplicationBootstrap(): Promise<void> {
+    const isHealthy = await this.checkRedisHealth();
+
+    if (!isHealthy) {
+      this.logger.warn('Redis is not healthy, attempting rebuild');
+      await this.rebuildFromEvents();
+    }
+  }
+
+  /**
+   * Kurrent DBイベントからRedisキャッシュを再構築
+   */
+  async rebuildFromEvents(): Promise<void> {
+    this.logger.info('Starting Redis cache rebuild from Kurrent DB');
+
+    const startTime = Date.now();
+    let processedCount = 0;
+
+    try {
+      // System集約の全イベントを読み込み
+      const events = await this.kurrentClient.readStream('$ce-System', {
+        direction: 'forward',
+        fromRevision: 'start'
+      });
+
+      for await (const resolvedEvent of events) {
+        const event = resolvedEvent.event;
+
+        if (event.type === 'SystemRegistered') {
+          // 確定済みとして登録（TTLなし）
+          await this.reservationService.confirm(event.data.name);
+          processedCount++;
+        }
+
+        if (event.type === 'SystemDecommissioned') {
+          // 名前を解放
+          await this.reservationService.releaseConfirmed(event.data.name);
+        }
+      }
+
+      const duration = Date.now() - startTime;
+
+      this.logger.info('Redis cache rebuild completed', {
+        processedCount,
+        durationMs: duration
+      });
+
+    } catch (error) {
+      this.logger.error('Redis cache rebuild failed', error);
+      throw error;
+    }
+  }
+
+  /**
+   * Redisキャッシュの整合性チェック
+   */
+  async checkRedisHealth(): Promise<boolean> {
+    try {
+      // Redisへのping
+      const pong = await this.redis.ping();
+      if (pong !== 'PONG') {
+        return false;
+      }
+
+      // キーの存在確認（最低限のヘルスチェック）
+      const keyCount = await this.redis.dbsize();
+      this.logger.debug('Redis health check passed', { keyCount });
+
+      return true;
+    } catch (error) {
+      this.logger.error('Redis health check failed', error);
+      return false;
+    }
+  }
+}
+```
+
+#### 3.3.4 監視・アラート設定
+
+```typescript
+// system-name-reservation.metrics.ts
+@Injectable()
+export class SystemNameReservationMetrics {
+  constructor(
+    @Inject('METRICS_SERVICE') private readonly metrics: MetricsService
+  ) {}
+
+  // 予約試行回数
+  @Counter()
+  reservationAttempts: number;
+
+  // 予約衝突回数（既に存在）
+  @Counter()
+  reservationConflicts: number;
+
+  // 予約期限切れ回数
+  @Counter()
+  reservationExpiries: number;
+
+  // Redis接続失敗回数
+  @Counter()
+  redisConnectionFailures: number;
+
+  // 予約処理時間
+  @Histogram()
+  reservationDuration: number[];
+
+  /**
+   * Microsoft Teamsへのアラート送信
+   */
+  async sendAlert(alertType: string, message: string): Promise<void> {
+    if (alertType === 'REDIS_DOWN' && this.redisConnectionFailures > 3) {
+      await this.teamsClient.sendAlert({
+        title: '🔴 Redis Name Reservation Service Down',
+        message: 'Redis接続に失敗しています。システム名の一意性保証が低下しています。',
+        severity: 'critical',
+        timestamp: new Date().toISOString()
+      });
+    }
+  }
+}
+```
+
+#### 3.3.5 Redis障害時のフォールバック戦略
+
+**戦略**: PostgreSQL Read Modelへのフォールバック（スローパス）
+
+```typescript
+// register-system.command-handler.ts（抜粋）
+async execute(command: RegisterSystemCommand): Promise<SystemId> {
+  const systemName = command.name.getValue().toLowerCase();
+
+  try {
+    // ファストパス: Redis同期予約
+    const reserved = await this.redisReservationService.tryReserve(
+      systemName,
+      command.aggregateId
+    );
+
+    if (!reserved) {
+      throw new SystemNameAlreadyExistsException(systemName);
+    }
+
+  } catch (redisError) {
+    // Redis障害時のフォールバック
+    this.logger.warn('Redis unavailable, falling back to PostgreSQL', {
+      error: redisError.message,
+      systemName
+    });
+
+    // スローパス: PostgreSQLで確認
+    const exists = await this.systemRepository.existsByName(systemName);
+
+    if (exists) {
+      throw new SystemNameAlreadyExistsException(systemName);
+    }
+
+    // レースコンディションリスクを受け入れて継続
+    // （小さなウィンドウのみ、Redis復旧後は正常化）
+
+    // アラート送信
+    this.metrics.redisConnectionFailures++;
+    await this.metrics.sendAlert('REDIS_DOWN', 'Falling back to PostgreSQL');
+  }
+
+  // ドメインロジック継続...
+}
+```
+
+### 3.4 EventStore DB プロジェクション設定
 
 ```javascript
 // System Name Uniqueness Projection
@@ -1036,10 +1427,13 @@ CREATE TABLE system_packages (
     -- テーブル定義 (上記参照)
 );
 
--- Create system_name_reservations table
-CREATE TABLE system_name_reservations (
+-- Create processed_events table
+CREATE TABLE processed_events (
     -- テーブル定義 (上記参照)
 );
+
+-- Note: system_name_reservations table is NOT created
+-- システム名の一意性はRedisで保証される（セクション1.4参照）
 
 -- Create indexes
 -- インデックス作成 (上記参照)
