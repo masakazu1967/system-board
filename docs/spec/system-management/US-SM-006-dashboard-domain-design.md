@@ -474,38 +474,79 @@ export interface SystemSummary {
   systemType: SystemType;
   status: SystemStatus;
   criticality: CriticalityLevel;
+  securityClassification: SecurityClassification;
 
   // Vulnerability Info (from Vulnerability Context)
   vulnerabilityCount: number;
   highSeverityVulnerabilities: number;
   criticalVulnerabilities: number;
   maxCVSSScore?: number;
+  latestVulnerabilityDate?: Date;
 
   // EOL Info (from System Context)
   hasEOLWarnings: boolean;
   eolDaysRemaining?: number;
+  eolPackagesCount: number;
+  nearestEOLDate?: Date; // US-SM-006-004で追加
 
   // Task Info (from Task Context)
   openTaskCount: number;
   urgentTaskCount: number;
   overdueTaskCount: number;
+  latestTaskDueDate?: Date;
 
-  // Last Updated
+  // Package Summary (from System Context)
+  totalPackages: number;
+  vulnerablePackages: number;
+  outdatedPackages: number; // US-SM-006-004で追加
+
+  // Metadata
+  isDeleted: boolean; // US-SM-006-004で追加（通常はfalseのみ返却）
+  createdAt: Date;
   lastUpdated: Date;
+  lastEventAppliedAt: Date;
+  lastEventId?: string; // US-SM-006-004で追加（冪等性保証用）
 }
 
 export interface DashboardStatistics {
+  // システム統計
   totalSystems: number;
   activeSystems: number;
+  inactiveSystems: number; // US-SM-006-004で追加
+  maintenanceSystems: number; // US-SM-006-004で追加
+
+  // 重要度別統計 (US-SM-006-004で追加)
+  criticalSystems: number;
+  highCriticalitySystems: number;
+  mediumCriticalitySystems: number;
+  lowCriticalitySystems: number;
+
+  // 脆弱性統計
   systemsWithVulnerabilities: number;
-  systemsWithEOLWarnings: number;
-
+  systemsWithCriticalVulns: number; // US-SM-006-004で追加
   totalVulnerabilities: number;
-  criticalVulnerabilities: number;
+  totalCriticalVulnerabilities: number; // US-SM-006-004で追加
+  totalHighSeverityVulnerabilities: number; // US-SM-006-004で追加
+  highestCVSSScore: number; // US-SM-006-004で追加
 
-  totalTasks: number;
-  urgentTasks: number;
-  overdueTasks: number;
+  // EOL統計
+  systemsWithEOLWarnings: number;
+  systemsEOLWithin30Days: number; // US-SM-006-004で追加
+  systemsEOLWithin90Days: number; // US-SM-006-004で追加
+
+  // タスク統計
+  totalOpenTasks: number; // totalTasks から名前変更
+  totalUrgentTasks: number; // urgentTasks から名前変更
+  totalOverdueTasks: number; // overdueTasks から名前変更
+
+  // パッケージ統計 (US-SM-006-004で追加)
+  totalPackages: number;
+  totalVulnerablePackages: number;
+  totalOutdatedPackages: number;
+
+  // メタデータ
+  lastUpdated: Date;
+  refreshedAt: Date; // US-SM-006-004で追加（Materialized View最終更新時刻）
 }
 
 export class DashboardResponse {
@@ -529,7 +570,7 @@ export class DashboardResponse {
 
 ## 4. Read Model設計
 
-### 4.1 Dashboard Read Model スキーマ
+### 4.1 Dashboard Read Model スキーマ参照
 
 **設計原則**:
 
@@ -538,112 +579,35 @@ export class DashboardResponse {
 - **マテリアライズドビュー**: PostgreSQLのMaterialized Viewを活用
 - **キャッシュ**: Redisで頻繁にアクセスされるデータをキャッシュ
 
-#### 4.1.1 PostgreSQL Read Model Schema
+**データベーススキーマ詳細**: データベースの物理設計、インデックス戦略、パフォーマンス最適化については、以下のデータベース設計仕様書を参照してください：
 
-```sql
--- Dashboard専用の非正規化テーブル
-CREATE TABLE dashboard_system_view (
-  system_id UUID PRIMARY KEY,
-  system_name VARCHAR(255) NOT NULL,
-  system_type VARCHAR(50) NOT NULL,
-  system_status VARCHAR(50) NOT NULL,
-  criticality VARCHAR(50) NOT NULL,
-  security_classification VARCHAR(50) NOT NULL,
+👉 **[US-SM-006-004: ダッシュボードデータベース設計仕様書](./US-SM-006-004-dashboard-database-design.md)**
 
-  -- Vulnerability aggregated data
-  vulnerability_count INTEGER DEFAULT 0,
-  high_severity_vulnerabilities INTEGER DEFAULT 0,
-  critical_vulnerabilities INTEGER DEFAULT 0,
-  max_cvss_score NUMERIC(3,1),
-  latest_vulnerability_date TIMESTAMP,
+**主要なRead Modelテーブル**:
 
-  -- EOL aggregated data
-  has_eol_warnings BOOLEAN DEFAULT FALSE,
-  eol_days_remaining INTEGER,
-  eol_packages_count INTEGER DEFAULT 0,
+1. **`dashboard_system_view`**: システムごとの集約データを非正規化して格納
+   - システム基本情報（名前、種別、ステータス、重要度）
+   - 脆弱性集約データ（件数、重要度別カウント、最大CVSSスコア）
+   - EOL集約データ（警告フラグ、残日数、対象パッケージ数）
+   - タスク集約データ（オープン、緊急、期限切れカウント）
+   - パッケージサマリー（総数、脆弱性あり、古いパッケージ数）
+   - メタデータ（論理削除フラグ、作成日時、更新日時、最終イベント適用日時）
 
-  -- Task aggregated data
-  open_task_count INTEGER DEFAULT 0,
-  urgent_task_count INTEGER DEFAULT 0,
-  overdue_task_count INTEGER DEFAULT 0,
-  latest_task_due_date TIMESTAMP,
+2. **`dashboard_statistics`** (Materialized View): 統計情報を事前集計
+   - システム統計（総数、アクティブ数、ステータス別）
+   - 重要度別統計
+   - 脆弱性統計（脆弱性ありシステム数、重要度別合計）
+   - EOL統計（警告ありシステム数、期限内カウント）
+   - タスク統計（総数、緊急、期限切れ）
+   - パッケージ統計
+   - 30秒自動リフレッシュ（pg_cron使用）
 
-  -- Package summary
-  total_packages INTEGER DEFAULT 0,
-  vulnerable_packages INTEGER DEFAULT 0,
+**重要な追加カラム** (US-SM-006-004で定義):
 
-  -- Metadata
-  created_at TIMESTAMP NOT NULL DEFAULT NOW(),
-  updated_at TIMESTAMP NOT NULL DEFAULT NOW(),
-  last_event_applied_at TIMESTAMP NOT NULL,
-
-  -- 基本インデックス（単一カラム）
-  INDEX idx_system_status (system_status) WHERE is_deleted = FALSE,
-  INDEX idx_criticality (criticality) WHERE is_deleted = FALSE,
-
-  -- 部分インデックス（条件付き）
-  INDEX idx_has_vulnerabilities (vulnerability_count) WHERE vulnerability_count > 0 AND is_deleted = FALSE,
-  INDEX idx_has_eol_warnings (has_eol_warnings) WHERE has_eol_warnings = TRUE AND is_deleted = FALSE,
-  INDEX idx_has_urgent_tasks (urgent_task_count) WHERE urgent_task_count > 0 AND is_deleted = FALSE,
-
-  -- HIGH PRIORITY: 複合インデックス（複数条件フィルタリング用）
-  INDEX idx_critical_with_vulns (criticality, vulnerability_count)
-    WHERE criticality IN ('HIGH', 'CRITICAL') AND vulnerability_count > 0 AND is_deleted = FALSE,
-
-  INDEX idx_status_criticality (system_status, criticality)
-    WHERE is_deleted = FALSE,
-
-  INDEX idx_criticality_eol (criticality, has_eol_warnings)
-    WHERE has_eol_warnings = TRUE AND is_deleted = FALSE,
-
-  -- ソート用インデックス
-  INDEX idx_updated_at_desc (updated_at DESC) WHERE is_deleted = FALSE,
-  INDEX idx_max_cvss_score_desc (max_cvss_score DESC NULLS LAST)
-    WHERE max_cvss_score IS NOT NULL AND is_deleted = FALSE,
-
-  INDEX idx_urgent_tasks_desc (urgent_task_count DESC)
-    WHERE urgent_task_count > 0 AND is_deleted = FALSE
-);
-
--- Dashboard統計情報（Materialized View）
--- HIGH PRIORITY: リアルタイム性要件（数秒以内）を満たすため、軽量化して頻繁にリフレッシュ
-CREATE MATERIALIZED VIEW dashboard_statistics AS
-SELECT
-  COUNT(*) FILTER (WHERE is_deleted = FALSE) AS total_systems,
-  COUNT(*) FILTER (WHERE system_status = 'ACTIVE' AND is_deleted = FALSE) AS active_systems,
-  COUNT(*) FILTER (WHERE vulnerability_count > 0 AND is_deleted = FALSE) AS systems_with_vulnerabilities,
-  COUNT(*) FILTER (WHERE has_eol_warnings = TRUE AND is_deleted = FALSE) AS systems_with_eol_warnings,
-
-  COALESCE(SUM(vulnerability_count) FILTER (WHERE is_deleted = FALSE), 0) AS total_vulnerabilities,
-  COALESCE(SUM(critical_vulnerabilities) FILTER (WHERE is_deleted = FALSE), 0) AS critical_vulnerabilities,
-
-  COALESCE(SUM(open_task_count) FILTER (WHERE is_deleted = FALSE), 0) AS total_tasks,
-  COALESCE(SUM(urgent_task_count) FILTER (WHERE is_deleted = FALSE), 0) AS urgent_tasks,
-  COALESCE(SUM(overdue_task_count) FILTER (WHERE is_deleted = FALSE), 0) AS overdue_tasks,
-
-  MAX(updated_at) FILTER (WHERE is_deleted = FALSE) AS last_updated,
-  NOW() AS refreshed_at
-FROM dashboard_system_view;
-
--- HIGH PRIORITY: CONCURRENT REFRESHを可能にするユニークインデックス
-CREATE UNIQUE INDEX ON dashboard_statistics ((1));
-
--- HIGH PRIORITY: 30秒ごとの自動リフレッシュ（要件: 数秒以内の更新反映）
--- pg_cron extensionを使用
-SELECT cron.schedule(
-  'refresh-dashboard-stats-30s',
-  '*/30 * * * * *', -- 30秒ごと
-  $$REFRESH MATERIALIZED VIEW CONCURRENTLY dashboard_statistics$$
-);
-
--- 自動リフレッシュ用関数（手動実行用）
-CREATE OR REPLACE FUNCTION refresh_dashboard_statistics()
-RETURNS void AS $$
-BEGIN
-  REFRESH MATERIALIZED VIEW CONCURRENTLY dashboard_statistics;
-END;
-$$ LANGUAGE plpgsql;
-```
+- `is_deleted`: 論理削除フラグ（部分インデックスで使用）
+- `outdated_packages`: 古いパッケージ数
+- `nearest_eol_date`: 最も近いEOL日付
+- `last_event_id`: 最後に適用されたイベントID（冪等性保証）
 
 ### 4.2 Event Projection Service
 
