@@ -13,6 +13,7 @@
 本データベース設計は、CQRS + Event Sourcing パターンにおける **Read Model** として、ダッシュボード表示に最適化された高速クエリ基盤を提供します。
 
 **核心原則**:
+
 - **クエリ最適化優先**: 読み取りパフォーマンスを最優先（2秒未満のレスポンス）
 - **意図的な非正規化**: 結合を排除し、単一テーブルでのクエリを実現
 - **リアルタイム性**: 数秒以内のデータ更新反映（30秒自動リフレッシュ）
@@ -193,6 +194,7 @@ COMMENT ON MATERIALIZED VIEW dashboard_statistics IS 'ダッシュボード統�
 ### 3.1 インデックス戦略
 
 **原則**:
+
 1. **部分インデックス**: WHERE句で絞り込み、インデックスサイズを最小化
 2. **複合インデックス**: 頻繁に組み合わせて検索される条件に対応
 3. **カバリングインデックス**: SELECT句のカラムも含め、テーブルアクセスを削減
@@ -772,16 +774,19 @@ REFRESH MATERIALIZED VIEW dashboard_statistics;
 ## 12. 次のステップ
 
 ### Phase 1: 基本実装 (US-SM-006-005)
+
 - [ ] DDLスクリプト作成
 - [ ] マイグレーションファイル作成
 - [ ] 開発環境でのスキーマ構築
 
 ### Phase 2: Event Projection実装 (US-SM-006-006)
+
 - [ ] DashboardProjectionService実装
 - [ ] イベントハンドラー実装
 - [ ] リトライ機構実装
 
 ### Phase 3: パフォーマンステスト
+
 - [ ] 負荷テスト実施
 - [ ] インデックス効果検証
 - [ ] クエリ最適化
@@ -795,6 +800,7 @@ REFRESH MATERIALIZED VIEW dashboard_statistics;
 ---
 
 **レビュー依頼**:
+
 - Backend Developer: Event Projection Serviceとの連携確認
 - DevOps Engineer: pg_cron設定、監視メトリクス設計確認
 - Security Engineer: RLSポリシー、アクセス制御確認
