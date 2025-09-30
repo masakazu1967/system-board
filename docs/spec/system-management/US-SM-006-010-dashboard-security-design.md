@@ -1615,9 +1615,914 @@ export interface AccessMetadata {
 }
 ```
 
-## 6. OWASP Top 10 準拠チェック
+## 6. スケーラビリティとパフォーマンス最適化
 
-### 6.1 OWASP Top 10 2021 対策マッピング
+### 6.1 WebSocket接続管理のスケーラビリティ対応
+
+#### 6.1.1 課題
+
+現状のWebSocket実装では、`connectedClients` がメモリ内Mapで管理されており、以下の課題があります：
+
+- **水平スケール不可**: 複数サーバーインスタンス間で接続情報を共有できない
+- **単一障害点**: サーバークラッシュ時に全WebSocket接続が切断される
+- **メモリ制限**: 接続数増加に伴いメモリ使用量が線形に増加
+
+#### 6.1.2 解決策: Redis Pub/Sub + socket.io-redis アダプター
+
+```typescript
+/**
+ * 分散WebSocket接続管理
+ *
+ * apps/backend/system-mgmt/src/infrastructure/websocket/distributed-websocket.gateway.ts
+ */
+
+import { createAdapter } from '@socket.io/redis-adapter';
+import { createClient } from 'redis';
+
+@WebSocketGateway({
+  namespace: 'dashboard',
+  cors: {
+    origin: process.env.ALLOWED_ORIGINS?.split(',') || [],
+    credentials: true
+  },
+  transports: ['websocket'],
+  // Redis アダプターで複数サーバーインスタンス間の通信を実現
+  adapter: undefined  // 初期化時に設定
+})
+@UseGuards(WsAuthGuard, WsRoleGuard)
+export class DashboardRealtimeGateway implements OnGatewayInit {
+  @WebSocketServer()
+  server: Server;
+
+  constructor(
+    private readonly authService: DashboardAuthorizationService,
+    private readonly auditLogger: SecurityAuditLogger,
+    private readonly rateLimiter: WebSocketRateLimiterService,
+    private readonly redis: RedisService,
+    private readonly pubSub: RedisPubSubService,
+    private readonly configService: ConfigService
+  ) {}
+
+  /**
+   * ゲートウェイ初期化時にRedisアダプターを設定
+   */
+  async afterInit(server: Server) {
+    // Redis クライアント作成
+    const pubClient = createClient({
+      host: this.configService.get('REDIS_HOST'),
+      port: this.configService.get('REDIS_PORT'),
+      password: this.configService.get('REDIS_PASSWORD')
+    });
+
+    const subClient = pubClient.duplicate();
+
+    await Promise.all([
+      pubClient.connect(),
+      subClient.connect()
+    ]);
+
+    // socket.io-redis アダプターを設定
+    server.adapter(createAdapter(pubClient, subClient));
+
+    this.logger.log('Distributed WebSocket adapter initialized');
+  }
+
+  /**
+   * WebSocket接続時の処理（分散環境対応）
+   */
+  async handleConnection(client: Socket) {
+    try {
+      // 1. JWT認証
+      const token = this.extractToken(client);
+      const user = await this.authService.validateToken(token);
+
+      // 2. レート制限チェック
+      const rateLimitResult = await this.rateLimiter.checkLimit(
+        user.id,
+        'websocket_connection'
+      );
+
+      if (!rateLimitResult.allowed) {
+        client.emit('error', {
+          code: 'RATE_LIMIT_EXCEEDED',
+          message: 'WebSocket接続レート制限を超過しました'
+        });
+        client.disconnect();
+        return;
+      }
+
+      // 3. 接続認可チェック
+      const authResult = await this.authService.authorizeWebSocketConnection(user);
+
+      if (!authResult.isAllowed()) {
+        await this.auditLogger.logUnauthorizedWebSocketConnection({
+          userId: user.id,
+          reason: authResult.getReason(),
+          ipAddress: client.handshake.address,
+          timestamp: new Date()
+        });
+
+        client.emit('error', {
+          code: 'UNAUTHORIZED',
+          message: 'WebSocket接続が拒否されました'
+        });
+        client.disconnect();
+        return;
+      }
+
+      // 4. Redisに接続情報を保存（分散環境対応）
+      await this.redis.hset(
+        `ws:connections:${user.id}`,
+        client.id,
+        JSON.stringify({
+          connectedAt: new Date(),
+          serverId: process.env.SERVER_ID || 'default',
+          serverHostname: process.env.HOSTNAME,
+          ipAddress: client.handshake.address,
+          userAgent: client.handshake.headers['user-agent']
+        }),
+        { ttl: 86400 }  // 24時間
+      );
+
+      // 5. クライアントデータに権限情報を保存
+      client.data.user = user;
+      client.data.permissions = await this.authService.getDashboardPermissions(user.role);
+      client.data.connectedAt = new Date();
+
+      // 6. 他のサーバーインスタンスに接続通知
+      await this.pubSub.publish('ws:connection', {
+        event: 'client_connected',
+        userId: user.id,
+        clientId: client.id,
+        serverId: process.env.SERVER_ID,
+        timestamp: new Date()
+      });
+
+      // 7. 接続成功監査ログ
+      await this.auditLogger.logWebSocketConnection({
+        userId: user.id,
+        clientId: client.id,
+        serverId: process.env.SERVER_ID,
+        ipAddress: client.handshake.address,
+        timestamp: new Date()
+      });
+
+      // 8. 初期データ送信
+      await this.sendInitialDashboardData(client, user);
+
+    } catch (error) {
+      this.logger.error('WebSocket connection failed', error);
+      client.disconnect();
+    }
+  }
+
+  /**
+   * WebSocket切断時の処理（分散環境対応）
+   */
+  async handleDisconnect(client: Socket) {
+    const user = client.data.user;
+
+    if (user) {
+      // 1. Redisから接続情報を削除
+      await this.redis.hdel(`ws:connections:${user.id}`, client.id);
+
+      // 2. 他のサーバーインスタンスに切断通知
+      await this.pubSub.publish('ws:disconnection', {
+        event: 'client_disconnected',
+        userId: user.id,
+        clientId: client.id,
+        serverId: process.env.SERVER_ID,
+        timestamp: new Date()
+      });
+
+      // 3. 切断監査ログ
+      await this.auditLogger.logWebSocketDisconnection({
+        userId: user.id,
+        clientId: client.id,
+        serverId: process.env.SERVER_ID,
+        duration: Date.now() - client.data.connectedAt.getTime(),
+        timestamp: new Date()
+      });
+    }
+  }
+
+  /**
+   * ダッシュボード更新通知（全サーバーインスタンスに配信）
+   */
+  @SubscribeMessage('dashboard_update')
+  async handleDashboardUpdate(
+    @MessageBody() data: DashboardUpdatePayload,
+    @ConnectedSocket() client: Socket
+  ) {
+    const user = client.data.user;
+    const permissions = client.data.permissions;
+
+    if (!user || !permissions) {
+      return;
+    }
+
+    // 更新データに対するアクセス権限チェック
+    const authResult = await this.authService.authorizeDataAccess(
+      user,
+      data.systemId,
+      data.securityClassification
+    );
+
+    if (!authResult.isAllowed()) {
+      await this.auditLogger.logUnauthorizedDataAccess({
+        userId: user.id,
+        systemId: data.systemId,
+        classification: data.securityClassification,
+        timestamp: new Date()
+      });
+      return;
+    }
+
+    // ユーザー権限に応じたフィールドフィルタリング
+    const filteredData = await this.filterUpdateDataForUser(
+      data,
+      user,
+      permissions
+    );
+
+    // **重要**: server.to() を使用することで、
+    // Redis Pub/Sub経由で全サーバーインスタンスのクライアントに配信される
+    this.server.to(`user:${user.id}`).emit('dashboard_update', filteredData);
+  }
+
+  /**
+   * ユーザー別ルームへの参加（サーバーインスタンス間で共有）
+   */
+  @SubscribeMessage('join_user_room')
+  async handleJoinUserRoom(@ConnectedSocket() client: Socket) {
+    const user = client.data.user;
+
+    if (user) {
+      // ユーザー専用ルームに参加
+      // Redis Pub/Sub により全サーバーインスタンス間で共有される
+      await client.join(`user:${user.id}`);
+
+      this.logger.log(`Client ${client.id} joined room user:${user.id}`);
+    }
+  }
+
+  /**
+   * 特定ユーザーの全接続数取得（全サーバーインスタンス）
+   */
+  private async getUserConnectionCount(userId: string): Promise<number> {
+    const connections = await this.redis.hgetall(`ws:connections:${userId}`);
+    return Object.keys(connections).length;
+  }
+
+  /**
+   * 特定ユーザーの全接続をサーバーインスタンス横断で取得
+   */
+  private async getUserConnections(userId: string): Promise<ConnectionInfo[]> {
+    const connections = await this.redis.hgetall(`ws:connections:${userId}`);
+
+    return Object.entries(connections).map(([clientId, data]) => ({
+      clientId,
+      ...JSON.parse(data)
+    }));
+  }
+
+  private extractToken(client: Socket): string {
+    const token = client.handshake.auth.token ||
+                  client.handshake.headers.authorization?.replace('Bearer ', '');
+
+    if (!token) {
+      throw new UnauthorizedException('認証トークンが見つかりません');
+    }
+
+    return token;
+  }
+
+  private async sendInitialDashboardData(client: Socket, user: User) {
+    const permissions = await this.authService.getDashboardPermissions(user.role);
+    const systems = await this.getDashboardSystemsForUser(user, permissions);
+
+    client.emit('initial_data', {
+      systems,
+      permissions,
+      timestamp: new Date()
+    });
+  }
+
+  private async filterUpdateDataForUser(
+    data: DashboardUpdatePayload,
+    user: User,
+    permissions: DashboardUIPermissions
+  ): Promise<Partial<DashboardUpdatePayload>> {
+    const fieldVisibility = await this.authService.getFieldVisibility(user.role);
+
+    const filtered: any = {
+      systemId: data.systemId,
+      timestamp: data.timestamp
+    };
+
+    Object.keys(data).forEach(key => {
+      if (this.isFieldVisible(key, fieldVisibility)) {
+        filtered[key] = data[key];
+      }
+    });
+
+    return filtered;
+  }
+
+  private isFieldVisible(
+    fieldName: string,
+    visibility: DashboardSystemFieldVisibility
+  ): boolean {
+    for (const category of Object.keys(visibility)) {
+      if (visibility[category][fieldName] === true) {
+        return true;
+      }
+    }
+    return false;
+  }
+
+  private async getDashboardSystemsForUser(
+    user: User,
+    permissions: DashboardUIPermissions
+  ): Promise<any[]> {
+    // 実装省略
+    return [];
+  }
+}
+
+/**
+ * 接続情報型定義
+ */
+export interface ConnectionInfo {
+  clientId: string;
+  connectedAt: Date;
+  serverId: string;
+  serverHostname: string;
+  ipAddress: string;
+  userAgent: string;
+}
+```
+
+#### 6.1.3 スケーラビリティメトリクス
+
+```typescript
+/**
+ * WebSocketスケーラビリティ監視サービス
+ */
+@Injectable()
+export class WebSocketMetricsService {
+  constructor(
+    private readonly redis: RedisService,
+    private readonly prometheus: PrometheusService
+  ) {
+    // メトリクス定義
+    this.totalConnectionsGauge = new prometheus.Gauge({
+      name: 'websocket_connections_total',
+      help: 'Total WebSocket connections across all servers',
+      labelNames: ['server_id']
+    });
+
+    this.connectionsPerUserGauge = new prometheus.Histogram({
+      name: 'websocket_connections_per_user',
+      help: 'Number of connections per user',
+      buckets: [1, 2, 3, 5, 10, 20]
+    });
+  }
+
+  /**
+   * 全サーバーインスタンスの総接続数を取得
+   */
+  async getTotalConnections(): Promise<number> {
+    const keys = await this.redis.keys('ws:connections:*');
+    let total = 0;
+
+    for (const key of keys) {
+      const connections = await this.redis.hlen(key);
+      total += connections;
+    }
+
+    return total;
+  }
+
+  /**
+   * サーバーインスタンス別接続数を取得
+   */
+  async getConnectionsByServer(): Promise<Map<string, number>> {
+    const keys = await this.redis.keys('ws:connections:*');
+    const serverCounts = new Map<string, number>();
+
+    for (const key of keys) {
+      const connections = await this.redis.hgetall(key);
+
+      Object.values(connections).forEach(data => {
+        const { serverId } = JSON.parse(data);
+        serverCounts.set(serverId, (serverCounts.get(serverId) || 0) + 1);
+      });
+    }
+
+    return serverCounts;
+  }
+
+  /**
+   * メトリクスを定期的に更新
+   */
+  @Cron('*/30 * * * * *')  // 30秒ごと
+  async updateMetrics() {
+    const serverCounts = await this.getConnectionsByServer();
+
+    serverCounts.forEach((count, serverId) => {
+      this.totalConnectionsGauge.set({ server_id: serverId }, count);
+    });
+  }
+}
+```
+
+### 6.2 PostgreSQL Row-Level Security (RLS) 実装
+
+#### 6.2.1 データベースマイグレーション
+
+```sql
+-- ============================================
+-- Dashboard Row-Level Security Implementation
+-- ============================================
+-- File: apps/backend/system-mgmt/db/migrations/20250930_add_dashboard_rls.sql
+-- Purpose: セキュリティ分類に基づくRow-Level Securityポリシー実装
+
+-- ============ 1. Row-Level Securityを有効化 ============
+
+ALTER TABLE dashboard_system_view ENABLE ROW LEVEL SECURITY;
+
+-- ============ 2. セッション変数設定用関数 ============
+
+-- ユーザーコンテキスト設定関数
+CREATE OR REPLACE FUNCTION set_user_context(
+  p_user_id UUID,
+  p_user_role VARCHAR(50)
+)
+RETURNS VOID AS $$
+BEGIN
+  -- セッション変数にユーザーIDとロールを設定
+  -- false: トランザクション終了後も保持
+  PERFORM set_config('app.user_id', p_user_id::TEXT, false);
+  PERFORM set_config('app.user_role', p_user_role, false);
+
+  -- 監査ログ用にIPアドレスも保存（オプション）
+  -- PERFORM set_config('app.user_ip', inet_client_addr()::TEXT, false);
+END;
+$$ LANGUAGE plpgsql SECURITY DEFINER;
+
+COMMENT ON FUNCTION set_user_context IS 'Webアプリケーションからのユーザーコンテキスト設定用関数';
+
+-- ============ 3. ユーザーコンテキスト取得関数 ============
+
+-- 現在のユーザーIDを取得
+CREATE OR REPLACE FUNCTION get_current_user_id()
+RETURNS UUID AS $$
+BEGIN
+  RETURN current_setting('app.user_id', true)::UUID;
+EXCEPTION
+  WHEN OTHERS THEN
+    RETURN NULL;
+END;
+$$ LANGUAGE plpgsql STABLE;
+
+-- 現在のユーザーロールを取得
+CREATE OR REPLACE FUNCTION get_current_user_role()
+RETURNS VARCHAR(50) AS $$
+BEGIN
+  RETURN current_setting('app.user_role', true);
+EXCEPTION
+  WHEN OTHERS THEN
+    RETURN 'GUEST';  -- デフォルトは最小権限
+END;
+$$ LANGUAGE plpgsql STABLE;
+
+-- ============ 4. RLSポリシー: セキュリティ分類別アクセス制御 ============
+
+-- ダッシュボードシステムビュー: SELECT ポリシー
+CREATE POLICY dashboard_system_view_select_policy
+ON dashboard_system_view
+FOR SELECT
+USING (
+  -- セキュリティ分類とユーザーロールに基づくアクセス制御
+  CASE get_current_user_role()
+    -- SECURITY_OFFICERは全データアクセス可能
+    WHEN 'SECURITY_OFFICER' THEN TRUE
+
+    -- ADMINISTRATORはCONFIDENTIAL以下にアクセス可能
+    WHEN 'ADMINISTRATOR' THEN
+      security_classification IN ('PUBLIC', 'INTERNAL', 'CONFIDENTIAL')
+
+    -- OPERATORはINTERNAL以下にアクセス可能
+    WHEN 'OPERATOR' THEN
+      security_classification IN ('PUBLIC', 'INTERNAL')
+
+    -- GUESTはPUBLICのみアクセス可能
+    WHEN 'GUEST' THEN
+      security_classification = 'PUBLIC'
+
+    -- 未認証またはロール未設定の場合はアクセス拒否
+    ELSE FALSE
+  END
+
+  -- 論理削除されたレコードは全ユーザーから非表示
+  AND is_deleted = FALSE
+);
+
+COMMENT ON POLICY dashboard_system_view_select_policy ON dashboard_system_view IS
+'セキュリティ分類とユーザーロールに基づくアクセス制御ポリシー';
+
+-- ============ 5. RLSポリシー: 監査ログアクセス制御 ============
+
+-- 監査ログテーブルのRLS有効化
+ALTER TABLE security_audit_log ENABLE ROW LEVEL SECURITY;
+
+-- 監査ログ: SECURITY_OFFICERのみアクセス可能
+CREATE POLICY security_audit_log_select_policy
+ON security_audit_log
+FOR SELECT
+USING (
+  get_current_user_role() = 'SECURITY_OFFICER'
+);
+
+COMMENT ON POLICY security_audit_log_select_policy ON security_audit_log IS
+'監査ログはSECURITY_OFFICERのみアクセス可能';
+
+-- ============ 6. パフォーマンス最適化インデックス ============
+
+-- セキュリティ分類 + 論理削除フラグの複合インデックス
+-- RLSポリシーのWHERE句を高速化
+CREATE INDEX IF NOT EXISTS idx_dashboard_rls_security_classification
+ON dashboard_system_view (security_classification, is_deleted)
+WHERE is_deleted = FALSE;
+
+COMMENT ON INDEX idx_dashboard_rls_security_classification IS
+'RLSポリシー高速化用インデックス（セキュリティ分類 + 論理削除フラグ）';
+
+-- ============ 7. RLSポリシーテスト用関数 ============
+
+-- RLSポリシーの動作確認用関数
+CREATE OR REPLACE FUNCTION test_rls_policy(
+  p_user_role VARCHAR(50)
+)
+RETURNS TABLE(
+  role VARCHAR(50),
+  visible_systems_count BIGINT,
+  visible_classifications TEXT[]
+) AS $$
+BEGIN
+  -- テスト用ユーザーコンテキストを設定
+  PERFORM set_user_context(
+    gen_random_uuid(),  -- ダミーユーザーID
+    p_user_role
+  );
+
+  -- 可視システム数を取得
+  RETURN QUERY
+  SELECT
+    p_user_role AS role,
+    COUNT(*) AS visible_systems_count,
+    ARRAY_AGG(DISTINCT security_classification ORDER BY security_classification) AS visible_classifications
+  FROM dashboard_system_view;
+END;
+$$ LANGUAGE plpgsql;
+
+COMMENT ON FUNCTION test_rls_policy IS 'RLSポリシーの動作確認用関数（開発・テスト用）';
+
+-- ============ 8. 使用例 ============
+
+/*
+-- アプリケーション側からの使用例（NestJS）
+
+// 1. リクエスト開始時にユーザーコンテキストを設定
+await this.connection.query(
+  'SELECT set_user_context($1, $2)',
+  [req.user.id, req.user.role]
+);
+
+// 2. 通常のクエリ実行（RLSポリシーが自動適用される）
+const systems = await this.dashboardRepository.find();
+// -> ユーザーロールに応じて自動的にフィルタリングされる
+
+// 3. トランザクション終了後、セッション変数はリセット
+*/
+
+-- ============ 9. テスト実行例 ============
+
+/*
+-- GUEST権限でのアクセステスト
+SELECT * FROM test_rls_policy('GUEST');
+-- 結果: PUBLIC分類のシステムのみ表示
+
+-- OPERATOR権限でのアクセステスト
+SELECT * FROM test_rls_policy('OPERATOR');
+-- 結果: PUBLIC, INTERNAL分類のシステムが表示
+
+-- ADMINISTRATOR権限でのアクセステスト
+SELECT * FROM test_rls_policy('ADMINISTRATOR');
+-- 結果: PUBLIC, INTERNAL, CONFIDENTIAL分類のシステムが表示
+
+-- SECURITY_OFFICER権限でのアクセステスト
+SELECT * FROM test_rls_policy('SECURITY_OFFICER');
+-- 結果: すべての分類のシステムが表示
+*/
+
+-- ============ 10. RLSポリシー監視ビュー ============
+
+-- RLSポリシーの適用状況を確認するビュー
+CREATE OR REPLACE VIEW v_rls_policy_status AS
+SELECT
+  schemaname,
+  tablename,
+  policyname,
+  permissive,
+  roles,
+  cmd,
+  qual
+FROM pg_policies
+WHERE tablename IN ('dashboard_system_view', 'security_audit_log')
+ORDER BY tablename, policyname;
+
+COMMENT ON VIEW v_rls_policy_status IS 'RLSポリシー適用状況確認ビュー';
+
+-- ============ 11. セキュリティベストプラクティス ============
+
+-- RLSをバイパスする特権ユーザーを作成しない
+-- すべてのアプリケーションユーザーはRLSポリシーに従う
+
+-- 管理者権限が必要な場合は、SECURITY_OFFICERロールを使用
+-- データベーススーパーユーザーはアプリケーションから使用しない
+
+-- セッション変数のリセット（接続プーリング使用時）
+CREATE OR REPLACE FUNCTION reset_user_context()
+RETURNS VOID AS $$
+BEGIN
+  PERFORM set_config('app.user_id', '', false);
+  PERFORM set_config('app.user_role', 'GUEST', false);
+END;
+$$ LANGUAGE plpgsql;
+
+COMMENT ON FUNCTION reset_user_context IS '接続プーリング使用時のセッション変数リセット用';
+```
+
+#### 6.2.2 NestJSミドルウェア統合
+
+```typescript
+/**
+ * PostgreSQL RLSコンテキスト設定ミドルウェア
+ *
+ * apps/backend/system-mgmt/src/infrastructure/database/middleware/rls-context.middleware.ts
+ */
+
+import { Injectable, NestMiddleware } from '@nestjs/common';
+import { Request, Response, NextFunction } from 'express';
+import { InjectConnection } from '@nestjs/typeorm';
+import { Connection } from 'typeorm';
+
+@Injectable()
+export class RLSContextMiddleware implements NestMiddleware {
+  constructor(
+    @InjectConnection() private readonly connection: Connection,
+    private readonly logger: Logger
+  ) {}
+
+  async use(req: Request, res: Response, next: NextFunction) {
+    // 未認証リクエストはスキップ
+    if (!req.user) {
+      // GESTロールをデフォルト設定
+      await this.setGuestContext();
+      return next();
+    }
+
+    try {
+      // PostgreSQLセッション変数を設定
+      await this.connection.query(
+        'SELECT set_user_context($1, $2)',
+        [req.user.id, req.user.role]
+      );
+
+      this.logger.debug(
+        `RLS context set: userId=${req.user.id}, role=${req.user.role}`
+      );
+
+      // レスポンス送信後にセッション変数をリセット
+      res.on('finish', async () => {
+        try {
+          await this.connection.query('SELECT reset_user_context()');
+        } catch (error) {
+          this.logger.error('Failed to reset RLS context', error);
+        }
+      });
+
+      next();
+    } catch (error) {
+      this.logger.error('Failed to set RLS context', error);
+      // エラー発生時はGUESTロールにフォールバック
+      await this.setGuestContext();
+      next();
+    }
+  }
+
+  /**
+   * GUESTロールのデフォルトコンテキストを設定
+   */
+  private async setGuestContext() {
+    try {
+      await this.connection.query(
+        'SELECT set_user_context($1, $2)',
+        ['00000000-0000-0000-0000-000000000000', 'GUEST']
+      );
+    } catch (error) {
+      this.logger.error('Failed to set guest context', error);
+    }
+  }
+}
+
+/**
+ * RLSミドルウェアモジュール設定
+ *
+ * apps/backend/system-mgmt/src/infrastructure/database/database-security.module.ts
+ */
+
+@Module({
+  providers: [RLSContextMiddleware],
+  exports: [RLSContextMiddleware]
+})
+export class DatabaseSecurityModule implements NestModule {
+  configure(consumer: MiddlewareConsumer) {
+    // すべてのルートにRLSコンテキスト設定ミドルウェアを適用
+    consumer
+      .apply(RLSContextMiddleware)
+      .forRoutes({ path: '*', method: RequestMethod.ALL });
+  }
+}
+
+/**
+ * アプリケーションモジュールでのインポート
+ */
+@Module({
+  imports: [
+    DatabaseSecurityModule,
+    // ... 他のモジュール
+  ]
+})
+export class AppModule {}
+```
+
+#### 6.2.3 RLSポリシーテスト
+
+```typescript
+/**
+ * RLSポリシー統合テスト
+ *
+ * apps/backend/system-mgmt/test/integration/rls-policy.spec.ts
+ */
+
+describe('PostgreSQL RLS Policy Integration Tests', () => {
+  let connection: Connection;
+  let dashboardRepository: Repository<DashboardSystemViewEntity>;
+
+  beforeAll(async () => {
+    const module = await Test.createTestingModule({
+      imports: [DatabaseModule]
+    }).compile();
+
+    connection = module.get<Connection>(Connection);
+    dashboardRepository = connection.getRepository(DashboardSystemViewEntity);
+  });
+
+  describe('Row-Level Security Policies', () => {
+    it('should allow GUEST to see only PUBLIC systems', async () => {
+      // GUESTユーザーコンテキストを設定
+      await connection.query(
+        'SELECT set_user_context($1, $2)',
+        ['guest-user-id', 'GUEST']
+      );
+
+      const systems = await dashboardRepository.find();
+
+      // PUBLICシステムのみ取得されることを確認
+      expect(systems.every(s => s.securityClassification === 'PUBLIC')).toBe(true);
+      expect(systems.some(s => s.securityClassification === 'INTERNAL')).toBe(false);
+      expect(systems.some(s => s.securityClassification === 'CONFIDENTIAL')).toBe(false);
+      expect(systems.some(s => s.securityClassification === 'RESTRICTED')).toBe(false);
+    });
+
+    it('should allow OPERATOR to see PUBLIC and INTERNAL systems', async () => {
+      // OPERATORユーザーコンテキストを設定
+      await connection.query(
+        'SELECT set_user_context($1, $2)',
+        ['operator-user-id', 'OPERATOR']
+      );
+
+      const systems = await dashboardRepository.find();
+
+      // PUBLIC, INTERNALシステムのみ取得されることを確認
+      expect(
+        systems.every(s =>
+          s.securityClassification === 'PUBLIC' ||
+          s.securityClassification === 'INTERNAL'
+        )
+      ).toBe(true);
+      expect(systems.some(s => s.securityClassification === 'CONFIDENTIAL')).toBe(false);
+      expect(systems.some(s => s.securityClassification === 'RESTRICTED')).toBe(false);
+    });
+
+    it('should allow ADMINISTRATOR to see up to CONFIDENTIAL systems', async () => {
+      // ADMINISTRATORユーザーコンテキストを設定
+      await connection.query(
+        'SELECT set_user_context($1, $2)',
+        ['admin-user-id', 'ADMINISTRATOR']
+      );
+
+      const systems = await dashboardRepository.find();
+
+      // PUBLIC, INTERNAL, CONFIDENTIALシステムのみ取得されることを確認
+      expect(
+        systems.every(s =>
+          s.securityClassification === 'PUBLIC' ||
+          s.securityClassification === 'INTERNAL' ||
+          s.securityClassification === 'CONFIDENTIAL'
+        )
+      ).toBe(true);
+      expect(systems.some(s => s.securityClassification === 'RESTRICTED')).toBe(false);
+    });
+
+    it('should allow SECURITY_OFFICER to see all systems', async () => {
+      // SECURITY_OFFICERユーザーコンテキストを設定
+      await connection.query(
+        'SELECT set_user_context($1, $2)',
+        ['security-officer-id', 'SECURITY_OFFICER']
+      );
+
+      const allSystems = await dashboardRepository.find();
+      const publicSystems = await dashboardRepository.find({
+        where: { securityClassification: 'PUBLIC' }
+      });
+      const restrictedSystems = await dashboardRepository.find({
+        where: { securityClassification: 'RESTRICTED' }
+      });
+
+      // すべての分類のシステムが取得されることを確認
+      expect(allSystems.length).toBeGreaterThan(publicSystems.length);
+      expect(restrictedSystems.length).toBeGreaterThan(0);
+    });
+
+    it('should hide logically deleted systems from all users', async () => {
+      // SECURITY_OFFICERでも論理削除されたシステムは見えない
+      await connection.query(
+        'SELECT set_user_context($1, $2)',
+        ['security-officer-id', 'SECURITY_OFFICER']
+      );
+
+      const systems = await dashboardRepository.find();
+
+      expect(systems.every(s => s.isDeleted === false)).toBe(true);
+    });
+  });
+
+  describe('Audit Log RLS Policy', () => {
+    it('should deny access to audit logs for non-SECURITY_OFFICER users', async () => {
+      // ADMINISTRATORユーザーコンテキストを設定
+      await connection.query(
+        'SELECT set_user_context($1, $2)',
+        ['admin-user-id', 'ADMINISTRATOR']
+      );
+
+      const auditLogs = await connection
+        .getRepository('SecurityAuditLog')
+        .find();
+
+      // ADMINISTRATORは監査ログにアクセスできない
+      expect(auditLogs.length).toBe(0);
+    });
+
+    it('should allow SECURITY_OFFICER to access audit logs', async () => {
+      // SECURITY_OFFICERユーザーコンテキストを設定
+      await connection.query(
+        'SELECT set_user_context($1, $2)',
+        ['security-officer-id', 'SECURITY_OFFICER']
+      );
+
+      const auditLogs = await connection
+        .getRepository('SecurityAuditLog')
+        .find();
+
+      // SECURITY_OFFICERは監査ログにアクセスできる
+      expect(auditLogs.length).toBeGreaterThan(0);
+    });
+  });
+
+  afterEach(async () => {
+    // セッション変数をリセット
+    await connection.query('SELECT reset_user_context()');
+  });
+});
+```
+
+## 7. OWASP Top 10 準拠チェック
+
+### 7.1 OWASP Top 10 2021 対策マッピング
 
 | OWASP カテゴリ | 対策内容 | 実装箇所 | 検証方法 |
 |---------------|---------|---------|---------|
@@ -1632,7 +2537,7 @@ export interface AccessMetadata {
 | **A09: セキュリティログと監視の失敗** | 包括的監査ログ、異常検知 | `SecurityAuditLogger`, `AnomalyDetectionService` | ログレビュー + SIEM統合 |
 | **A10: サーバーサイドリクエストフォージェリ(SSRF)** | 外部リクエスト制限、URL検証 | API Gateway設定 | SSRFテスト |
 
-### 6.2 セキュリティテスト要件
+### 7.2 セキュリティテスト要件
 
 #### 6.2.1 必須テスト項目
 
@@ -1838,9 +2743,9 @@ describe('Dashboard Security Tests', () => {
 });
 ```
 
-## 7. 実装チェックリスト
+## 8. 実装チェックリスト
 
-### 7.1 バックエンド実装
+### 8.1 バックエンド実装
 
 - [ ] **アクセス制御**
   - [ ] `DashboardAuthorizationGuard` 実装
@@ -1877,7 +2782,7 @@ describe('Dashboard Security Tests', () => {
   - [ ] WebSocket接続/切断ログ
   - [ ] 異常アクセスログ
 
-### 7.2 フロントエンド実装
+### 8.2 フロントエンド実装
 
 - [ ] **セキュリティフック**
   - [ ] `useDashboardSecurity` フック実装
@@ -1891,7 +2796,7 @@ describe('Dashboard Security Tests', () => {
   - [ ] リアルタイム更新受信
   - [ ] エラーハンドリング
 
-### 7.3 テスト実装
+### 8.3 テスト実装
 
 - [ ] **ユニットテスト**
   - [ ] アクセス制御テスト
@@ -1911,16 +2816,16 @@ describe('Dashboard Security Tests', () => {
   - [ ] レート制限テスト
   - [ ] SSRFテスト
 
-### 7.4 ドキュメント整備
+### 8.4 ドキュメント整備
 
 - [ ] APIセキュリティドキュメント
 - [ ] WebSocketセキュリティガイド
 - [ ] データエクスポートポリシー
 - [ ] インシデント対応手順書
 
-## 8. 成功基準
+## 9. 成功基準
 
-### 8.1 セキュリティ基準
+### 9.1 セキュリティ基準
 
 | 基準項目 | 目標値 | 計測方法 |
 |---------|--------|---------|
@@ -1930,7 +2835,7 @@ describe('Dashboard Security Tests', () => {
 | 監査ログ完全性 | 100% | 監査ログレビュー |
 | OWASP Top 10準拠 | 100% | セキュリティスキャン |
 
-### 8.2 パフォーマンス基準
+### 9.2 パフォーマンス基準
 
 | 基準項目 | 目標値 | 計測方法 |
 |---------|--------|---------|
