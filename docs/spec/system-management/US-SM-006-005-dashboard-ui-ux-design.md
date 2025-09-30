@@ -2244,24 +2244,6 @@ class AuditLogService {
 
     // バックエンドAPIに送信
     await api.post('/audit/log', logEntry);
-
-    // ローカルにも記録（オフライン対応）
-    this.logToLocalStorage(logEntry);
-  }
-
-  /**
-   * ローカルストレージに記録（オフライン対応）
-   */
-  private logToLocalStorage(entry: AuditLogEntry): void {
-    const logs = JSON.parse(localStorage.getItem('audit_logs') || '[]');
-    logs.push(entry);
-
-    // 最大100件まで保持
-    if (logs.length > 100) {
-      logs.shift();
-    }
-
-    localStorage.setItem('audit_logs', JSON.stringify(logs));
   }
 }
 
