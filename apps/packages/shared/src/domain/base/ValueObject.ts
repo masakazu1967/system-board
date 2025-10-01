@@ -1,3 +1,5 @@
+import deepEqual from 'deep-equal';
+
 /**
  * Abstract Value Object Base Class
  * 値オブジェクトの基底抽象クラス
@@ -6,7 +8,7 @@
 export abstract class AbstractValueObject<T> {
   protected readonly props: T;
 
-  constructor(props: T) {
+  protected constructor(props: T) {
     this.props = Object.freeze(props);
   }
 
@@ -20,7 +22,7 @@ export abstract class AbstractValueObject<T> {
     if (vo.props === undefined) {
       return false;
     }
-    return JSON.stringify(this.props) === JSON.stringify(vo.props);
+    return deepEqual(this.props, vo.props);
   }
 }
 
@@ -28,28 +30,30 @@ export abstract class AbstractValueObject<T> {
  * Primitive Value Object
  * プリミティブ型の値オブジェクト基底クラス
  */
-export abstract class PrimitiveValueObject<T> extends AbstractValueObject<{
-  value: T;
-}> {
-  constructor(value: T) {
-    super({ value });
+export abstract class PrimitiveValueObject<
+  T extends string | number | boolean | bigint,
+> extends AbstractValueObject<T> {
+  protected constructor(value: T) {
+    super(value);
   }
 
   public getValue(): T {
-    return this.props.value;
+    return this.props;
   }
+}
+
+interface Props {
+  [key: string]: any;
 }
 
 /**
  * Generic Value Object
  * 複数プロパティを持つ値オブジェクト基底クラス
  */
-export abstract class ValueObject<T> extends AbstractValueObject<T> {
-  /**
-   * プロパティ取得メソッド
-   * 具象クラスで必要に応じてゲッターを実装
-   */
-  protected getProps(): Readonly<T> {
-    return this.props;
+export abstract class ValueObject<
+  PROPS extends Props,
+> extends AbstractValueObject<PROPS> {
+  protected constructor(props: PROPS) {
+    super(props);
   }
 }

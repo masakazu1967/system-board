@@ -1,6 +1,6 @@
 import { Injectable, Logger } from '@nestjs/common';
 import { DomainEvent } from '../../domain/base/DomainEvent';
-import type { ProcessedEventRepository } from '../interfaces/ProcessedEventRepository';
+import type { ProcessedEventService } from '../interfaces/ProcessedEventService';
 
 /**
  * Idempotent Event Handler
@@ -10,9 +10,7 @@ import type { ProcessedEventRepository } from '../interfaces/ProcessedEventRepos
 export class IdempotentEventHandler {
   private readonly logger = new Logger(IdempotentEventHandler.name);
 
-  constructor(
-    private readonly processedEventRepository: ProcessedEventRepository,
-  ) {}
+  constructor(private readonly processedEventService: ProcessedEventService) {}
 
   /**
    * 冪等性を保証してイベントを処理
@@ -22,8 +20,9 @@ export class IdempotentEventHandler {
     handler: (event: T) => Promise<void>,
   ): Promise<void> {
     // 処理済みイベントチェック
-    const isProcessed =
-      await this.processedEventRepository.isProcessed(event.eventId);
+    const isProcessed = await this.processedEventService.isProcessed(
+      event.eventId,
+    );
 
     if (isProcessed) {
       this.logger.debug('Event already processed, skipping', {
@@ -38,7 +37,7 @@ export class IdempotentEventHandler {
       await handler(event);
 
       // 処理済みマーク
-      await this.processedEventRepository.markAsProcessed(
+      await this.processedEventService.markAsProcessed(
         event.eventId,
         event.eventType,
         new Date(),

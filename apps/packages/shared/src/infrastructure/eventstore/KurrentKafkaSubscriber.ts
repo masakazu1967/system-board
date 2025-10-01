@@ -1,4 +1,5 @@
-import { Injectable, Logger, OnModuleInit } from '@nestjs/common';
+import { Controller, Injectable, Logger } from '@nestjs/common';
+import { EventPattern, Payload, Ctx, KafkaContext } from '@nestjs/microservices';
 import { EventSubscriber } from '../../application/interfaces/EventSubscriber';
 import { EventHandler } from '../../application/interfaces/EventHandler';
 
@@ -6,22 +7,17 @@ import { EventHandler } from '../../application/interfaces/EventHandler';
  * Kurrent Kafka Subscriber
  * Kafkaメッセージを受信してKurrent DBに永続化
  * ダブルコミット回避: Kafka → Kurrent DB の非同期永続化
+ * NestJS @EventPattern デコレータ使用
  */
+@Controller()
 @Injectable()
-export class KurrentKafkaSubscriber implements EventSubscriber, OnModuleInit {
+export class KurrentKafkaSubscriber implements EventSubscriber {
   private readonly logger = new Logger(KurrentKafkaSubscriber.name);
   private eventHandlers: Map<string, EventHandler> = new Map();
 
-  constructor(
+  constructor() {
     // TODO: KurrentDBClient をDI
     // private readonly kurrentClient: KurrentDBClient,
-    // TODO: KafkaService をDI
-    // private readonly kafkaService: KafkaService,
-  ) {}
-
-  async onModuleInit(): Promise<void> {
-    // Kafkaからイベントを受信してKurrent DBに保存
-    await this.subscribeToKafkaEvents();
   }
 
   subscribe(eventType: string, handler: EventHandler): void {
@@ -29,28 +25,86 @@ export class KurrentKafkaSubscriber implements EventSubscriber, OnModuleInit {
     this.logger.debug(`Event handler registered for ${eventType}`);
   }
 
-  private async subscribeToKafkaEvents(): Promise<void> {
-    // TODO: Kafka サブスクリプション実装
-    /*
-    await this.kafkaService.subscribe({
-      topics: ['system-events', 'vulnerability-events', 'task-events'],
-      groupId: 'eventstore-persistence-group',
-    });
-
-    this.kafkaService.run({
-      eachMessage: async ({ topic, partition, message }) => {
-        await this.handleKafkaMessage(topic, message);
-      },
-    });
-    */
-
-    this.logger.debug('Subscribed to Kafka events for Kurrent DB persistence');
+  /**
+   * システムイベントの受信（NestJS @EventPattern デコレータ使用）
+   */
+  @EventPattern('system-events')
+  async handleSystemEvents(
+    @Payload() payload: any,
+    @Ctx() context: KafkaContext,
+  ): Promise<void> {
+    await this.handleKafkaMessage(payload, context);
   }
 
-  private async handleKafkaMessage(topic: string, message: any): Promise<void> {
+  /**
+   * 脆弱性イベントの受信
+   */
+  @EventPattern('vulnerability-events')
+  async handleVulnerabilityEvents(
+    @Payload() payload: any,
+    @Ctx() context: KafkaContext,
+  ): Promise<void> {
+    await this.handleKafkaMessage(payload, context);
+  }
+
+  /**
+   * タスクイベントの受信
+   */
+  @EventPattern('task-events')
+  async handleTaskEvents(
+    @Payload() payload: any,
+    @Ctx() context: KafkaContext,
+  ): Promise<void> {
+    await this.handleKafkaMessage(payload, context);
+  }
+
+  /**
+   * セキュリティイベントの受信
+   */
+  @EventPattern('security-events')
+  async handleSecurityEvents(
+    @Payload() payload: any,
+    @Ctx() context: KafkaContext,
+  ): Promise<void> {
+    await this.handleKafkaMessage(payload, context);
+  }
+
+  /**
+   * 緊急イベントの受信
+   */
+  @EventPattern('urgent-events')
+  async handleUrgentEvents(
+    @Payload() payload: any,
+    @Ctx() context: KafkaContext,
+  ): Promise<void> {
+    await this.handleKafkaMessage(payload, context);
+  }
+
+  /**
+   * ドメインイベント（汎用）の受信
+   */
+  @EventPattern('domain-events')
+  async handleDomainEvents(
+    @Payload() payload: any,
+    @Ctx() context: KafkaContext,
+  ): Promise<void> {
+    await this.handleKafkaMessage(payload, context);
+  }
+
+  private async handleKafkaMessage(
+    payload: any,
+    context: KafkaContext,
+  ): Promise<void> {
+    const originalMessage = context.getMessage();
+    const topic = context.getTopic();
+    const partition = context.getPartition();
+
     try {
-      const eventData = JSON.parse(message.value.toString());
-      const eventType = message.headers['event-type'].toString();
+      const eventData = payload;
+      const eventType =
+        (originalMessage.headers &&
+          originalMessage.headers['event-type']?.toString()) ||
+        payload.eventType;
 
       // Kurrent DBに永続化
       await this.persistToEventStore(eventData, eventType);
@@ -59,10 +113,12 @@ export class KurrentKafkaSubscriber implements EventSubscriber, OnModuleInit {
         eventType,
         eventId: eventData.eventId,
         topic,
+        partition,
       });
     } catch (error) {
       this.logger.error('Failed to persist event to Kurrent DB', {
         topic,
+        partition,
         error: error instanceof Error ? error.message : String(error),
       });
       throw error;

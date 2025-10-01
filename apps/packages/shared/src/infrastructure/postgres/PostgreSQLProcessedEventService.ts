@@ -1,22 +1,16 @@
 import { Injectable, Logger } from '@nestjs/common';
-import { ProcessedEventRepository } from '../../application/interfaces/ProcessedEventRepository';
+import { ProcessedEventService } from '../../application/interfaces/ProcessedEventService';
 
 /**
- * PostgreSQL Processed Event Repository
+ * PostgreSQL Processed Event Service
  * 処理済みイベント管理（冪等性保証）
  */
 @Injectable()
-export class PostgreSQLProcessedEventRepository
-  implements ProcessedEventRepository
-{
-  private readonly logger = new Logger(
-    PostgreSQLProcessedEventRepository.name,
-  );
+export class PostgreSQLProcessedEventService implements ProcessedEventService {
+  private readonly logger = new Logger(PostgreSQLProcessedEventService.name);
 
-  constructor(
-    // TODO: Database connection をDI
-    // private readonly database: Database,
-  ) {
+  constructor() {
+    // private readonly database: Database, // TODO: Database connection をDI
     // テーブル作成（初回のみ）
     // this.createTable();
   }

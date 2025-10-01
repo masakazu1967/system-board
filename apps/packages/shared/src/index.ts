@@ -6,3 +6,6 @@ export * from './application';
 
 // Infrastructure Layer
 export * from './infrastructure';
+
+// Shared Module
+export * from './shared.module';

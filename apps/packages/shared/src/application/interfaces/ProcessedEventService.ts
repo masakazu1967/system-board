@@ -1,9 +1,9 @@
 /**
- * Processed Event Repository Interface
+ * Processed Event Service Interface
  * 処理済みイベント管理のインターフェイス
  * 冪等性保証のため
  */
-export interface ProcessedEventRepository {
+export interface ProcessedEventService {
   /**
    * イベントが処理済みかチェック
    */

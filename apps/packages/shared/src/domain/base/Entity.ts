@@ -47,8 +47,4 @@ export abstract class AbstractEntity<T extends EntityId> {
  * Generic Entity Class
  * 汎用エンティティクラス
  */
-export abstract class Entity<T extends EntityId> extends AbstractEntity<T> {
-  constructor(id: T) {
-    super(id);
-  }
-}
+export abstract class Entity<T extends EntityId> extends AbstractEntity<T> {}

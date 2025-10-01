@@ -1,19 +1,40 @@
-import { Injectable, Logger } from '@nestjs/common';
+import { Inject, Injectable, Logger, OnModuleInit } from '@nestjs/common';
+import { ClientKafka } from '@nestjs/microservices';
+import { lastValueFrom } from 'rxjs';
 import { DomainEvent } from '../../domain/base/DomainEvent';
 import { EventPublisher } from '../../application/interfaces/EventPublisher';
 
 /**
  * Kafka Event Publisher
  * Kafkaへイベントを配信（ダブルコミット回避: Kafka First）
+ * NestJS ClientKafka を使用
  */
 @Injectable()
-export class KafkaEventPublisher implements EventPublisher {
+export class KafkaEventPublisher implements EventPublisher, OnModuleInit {
   private readonly logger = new Logger(KafkaEventPublisher.name);
 
   constructor(
-    // TODO: KafkaService をDI（現時点ではモック）
-    // private readonly kafkaService: KafkaService,
+    @Inject('KAFKA_CLIENT') private readonly kafkaClient: ClientKafka,
   ) {}
+
+  async onModuleInit(): Promise<void> {
+    // レスポンストピックの購読設定
+    const topics = [
+      'system-events',
+      'vulnerability-events',
+      'task-events',
+      'security-events',
+      'urgent-events',
+      'domain-events',
+    ];
+
+    topics.forEach((topic) => {
+      this.kafkaClient.subscribeToResponseOf(topic);
+    });
+
+    await this.kafkaClient.connect();
+    this.logger.log('Kafka client connected successfully');
+  }
 
   async publishAll(events: DomainEvent[]): Promise<void> {
     const publishPromises = events.map((event) => this.publish(event));
@@ -23,34 +44,36 @@ export class KafkaEventPublisher implements EventPublisher {
   async publish(event: DomainEvent): Promise<void> {
     const topic = this.determineTopicByEventType(event.eventType);
 
-    const message = {
-      key: event.aggregateId,
-      value: JSON.stringify({
-        eventId: event.eventId,
-        eventType: event.eventType,
-        aggregateId: event.aggregateId,
-        aggregateType: event.aggregateType,
-        aggregateVersion: event.aggregateVersion,
-        occurredOn: event.occurredOn.toISOString(),
-        correlationId: event.correlationId,
-        causationId: event.causationId,
-        data: event.getData(),
-      }),
-      headers: {
-        'content-type': 'application/json',
-        'event-type': event.eventType,
-        'correlation-id': event.correlationId,
-      },
+    const payload = {
+      eventId: event.eventId,
+      eventType: event.eventType,
+      aggregateId: event.aggregateId,
+      aggregateType: event.aggregateType,
+      aggregateVersion: event.aggregateVersion,
+      occurredOn: event.occurredOn.toISOString(),
+      correlationId: event.correlationId,
+      causationId: event.causationId,
+      data: event.getData(),
     };
 
-    // TODO: Kafkaへの配信実装
-    // await this.kafkaService.send({ topic, messages: [message] });
+    // NestJS ClientKafka の emit() を使用（Fire-and-Forget）
+    // Kafka配信成功を待ってからCommand Handler完了
+    await lastValueFrom(
+      this.kafkaClient.emit(topic, {
+        key: event.aggregateId,
+        value: payload,
+        headers: {
+          'content-type': 'application/json',
+          'event-type': event.eventType,
+          'correlation-id': event.correlationId,
+        },
+      }),
+    );
 
     this.logger.debug('Event published to Kafka (Kafka First pattern)', {
       eventType: event.eventType,
       aggregateId: event.aggregateId,
       topic,
-      message,
     });
   }
 
