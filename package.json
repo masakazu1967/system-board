@@ -6,7 +6,16 @@
   "scripts": {
     "build": "turbo build",
     "lint": "turbo lint",
-    "format": "turbo format"
+    "format": "turbo format",
+    "shared": "pnpm --filter '@system-board/shared'",
+    "system-management": "pnpm --filter '@system-board/system-management'",
+    "vulnerability-management": "pnpm --filter '@system-board/vulnerability-management'",
+    "relationship-management": "pnpm --filter '@system-board/relationship-management'",
+    "task-management": "pnpm --filter '@system-board/task-management'",
+    "system-management-service": "pnpm --filter '@system-board/system-management-service'",
+    "vulnerability-management-service": "pnpm --filter '@system-board/vulnerability-management-service'",
+    "relationship-management-service": "pnpm --filter '@system-board/relationship-management-service'",
+    "task-management-service": "pnpm --filter '@system-board/task-management-service'"
   },
   "keywords": [],
   "author": {
