@@ -1,9 +1,9 @@
 // Kafka Infrastructure
 export * from './kafka/KafkaEventPublisher';
-export * from './kafka/kafka.module';
+export * from './kafka/KafkaModule';
 
 // Event Store Infrastructure
 export * from './eventstore/KurrentKafkaSubscriber';
 
 // PostgreSQL Infrastructure
-export * from './postgres/PostgreSQLProcessedEventService';
+export * from './typeorm/TypeOrmProcessedEventService';

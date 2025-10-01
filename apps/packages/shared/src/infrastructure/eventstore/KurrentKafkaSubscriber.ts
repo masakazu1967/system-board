@@ -1,7 +1,14 @@
-import { Controller, Injectable, Logger } from '@nestjs/common';
-import { EventPattern, Payload, Ctx, KafkaContext } from '@nestjs/microservices';
+import { Controller, Injectable, Logger, Inject } from '@nestjs/common';
+import {
+  EventPattern,
+  Payload,
+  Ctx,
+  KafkaContext,
+} from '@nestjs/microservices';
 import { EventSubscriber } from '../../application/interfaces/EventSubscriber';
 import { EventHandler } from '../../application/interfaces/EventHandler';
+import { DomainEvent } from '../../domain/base/DomainEvent';
+import type { KurrentDBClient } from './KurrentDBClient.interface';
 
 /**
  * Kurrent Kafka Subscriber
@@ -13,12 +20,12 @@ import { EventHandler } from '../../application/interfaces/EventHandler';
 @Injectable()
 export class KurrentKafkaSubscriber implements EventSubscriber {
   private readonly logger = new Logger(KurrentKafkaSubscriber.name);
-  private eventHandlers: Map<string, EventHandler> = new Map();
+  private readonly eventHandlers: Map<string, EventHandler> = new Map();
 
-  constructor() {
-    // TODO: KurrentDBClient をDI
-    // private readonly kurrentClient: KurrentDBClient,
-  }
+  constructor(
+    @Inject('KurrentDBClient')
+    private readonly kurrentClient: KurrentDBClient,
+  ) {}
 
   subscribe(eventType: string, handler: EventHandler): void {
     this.eventHandlers.set(eventType, handler);
@@ -30,7 +37,7 @@ export class KurrentKafkaSubscriber implements EventSubscriber {
    */
   @EventPattern('system-events')
   async handleSystemEvents(
-    @Payload() payload: any,
+    @Payload() payload: DomainEvent,
     @Ctx() context: KafkaContext,
   ): Promise<void> {
     await this.handleKafkaMessage(payload, context);
@@ -41,7 +48,7 @@ export class KurrentKafkaSubscriber implements EventSubscriber {
    */
   @EventPattern('vulnerability-events')
   async handleVulnerabilityEvents(
-    @Payload() payload: any,
+    @Payload() payload: DomainEvent,
     @Ctx() context: KafkaContext,
   ): Promise<void> {
     await this.handleKafkaMessage(payload, context);
@@ -52,7 +59,7 @@ export class KurrentKafkaSubscriber implements EventSubscriber {
    */
   @EventPattern('task-events')
   async handleTaskEvents(
-    @Payload() payload: any,
+    @Payload() payload: DomainEvent,
     @Ctx() context: KafkaContext,
   ): Promise<void> {
     await this.handleKafkaMessage(payload, context);
@@ -63,7 +70,7 @@ export class KurrentKafkaSubscriber implements EventSubscriber {
    */
   @EventPattern('security-events')
   async handleSecurityEvents(
-    @Payload() payload: any,
+    @Payload() payload: DomainEvent,
     @Ctx() context: KafkaContext,
   ): Promise<void> {
     await this.handleKafkaMessage(payload, context);
@@ -74,7 +81,7 @@ export class KurrentKafkaSubscriber implements EventSubscriber {
    */
   @EventPattern('urgent-events')
   async handleUrgentEvents(
-    @Payload() payload: any,
+    @Payload() payload: DomainEvent,
     @Ctx() context: KafkaContext,
   ): Promise<void> {
     await this.handleKafkaMessage(payload, context);
@@ -85,14 +92,14 @@ export class KurrentKafkaSubscriber implements EventSubscriber {
    */
   @EventPattern('domain-events')
   async handleDomainEvents(
-    @Payload() payload: any,
+    @Payload() payload: DomainEvent,
     @Ctx() context: KafkaContext,
   ): Promise<void> {
     await this.handleKafkaMessage(payload, context);
   }
 
   private async handleKafkaMessage(
-    payload: any,
+    payload: DomainEvent,
     context: KafkaContext,
   ): Promise<void> {
     const originalMessage = context.getMessage();
@@ -100,18 +107,16 @@ export class KurrentKafkaSubscriber implements EventSubscriber {
     const partition = context.getPartition();
 
     try {
-      const eventData = payload;
       const eventType =
-        (originalMessage.headers &&
-          originalMessage.headers['event-type']?.toString()) ||
+        originalMessage.headers?.['event-type']?.toString() ||
         payload.eventType;
 
       // Kurrent DBに永続化
-      await this.persistToEventStore(eventData, eventType);
+      await this.persistToEventStore(payload, eventType);
 
       this.logger.debug('Event persisted to Kurrent DB from Kafka', {
         eventType,
-        eventId: eventData.eventId,
+        eventId: payload.eventId,
         topic,
         partition,
       });
@@ -126,7 +131,7 @@ export class KurrentKafkaSubscriber implements EventSubscriber {
   }
 
   private async persistToEventStore(
-    eventData: any,
+    eventData: DomainEvent,
     eventType: string,
   ): Promise<void> {
     const streamName = this.getStreamName(
@@ -137,7 +142,7 @@ export class KurrentKafkaSubscriber implements EventSubscriber {
     const eventToStore = {
       eventId: eventData.eventId,
       eventType: eventType,
-      data: eventData.data,
+      data: eventData.getData(),
       metadata: {
         correlationId: eventData.correlationId,
         causationId: eventData.causationId,
@@ -145,12 +150,9 @@ export class KurrentKafkaSubscriber implements EventSubscriber {
       },
     };
 
-    // TODO: Kurrent DB への永続化実装
-    /*
     await this.kurrentClient.appendToStream(streamName, [eventToStore], {
       expectedRevision: 'any',
     });
-    */
 
     this.logger.debug('Event stored in Kurrent DB', {
       streamName,

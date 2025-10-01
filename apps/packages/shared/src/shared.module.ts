@@ -1,8 +1,8 @@
 import { Module } from '@nestjs/common';
 import { ConfigModule } from '@nestjs/config';
-import { KafkaModule } from './infrastructure/kafka/kafka.module';
+import { KafkaModule } from './infrastructure/kafka/KafkaModule';
 import { KurrentKafkaSubscriber } from './infrastructure/eventstore/KurrentKafkaSubscriber';
-import { PostgreSQLProcessedEventService } from './infrastructure/postgres/PostgreSQLProcessedEventService';
+import { TypeOrmProcessedEventService } from './infrastructure/typeorm/TypeOrmProcessedEventService';
 import { IdempotentEventHandler } from './application/base/IdempotentEventHandler';
 
 /**
@@ -20,13 +20,13 @@ import { IdempotentEventHandler } from './application/base/IdempotentEventHandle
   providers: [
     // Event Infrastructure
     KurrentKafkaSubscriber,
-    PostgreSQLProcessedEventService,
+    TypeOrmProcessedEventService,
     IdempotentEventHandler,
   ],
   exports: [
     KafkaModule,
     KurrentKafkaSubscriber,
-    PostgreSQLProcessedEventService,
+    TypeOrmProcessedEventService,
     IdempotentEventHandler,
   ],
 })
