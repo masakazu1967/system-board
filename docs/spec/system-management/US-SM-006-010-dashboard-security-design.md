@@ -5,6 +5,7 @@
 **Issue**: #179 (US-SM-006-010: ダッシュボードセキュリティ設計)
 **親Issue**: US-SM-006 (ダッシュボード表示)
 **関連設計**:
+
 - [セキュリティ分類別認可マトリクス設計仕様](./security-authorization-matrix.md)
 - [セキュリティ実装仕様書](../../security/security-implementation-spec.md)
 - [ダッシュボードデータベース設計仕様書](./US-SM-006-004-dashboard-database-design.md)
@@ -38,10 +39,12 @@
 #### 1.2.2 攻撃者モデル
 
 **内部脅威**:
+
 - **悪意のある内部者**: 正規アクセス権を持つが、権限外情報を不正取得
 - **権限誤用**: 誤操作または意図的な権限乱用
 
 **外部脅威**:
+
 - **認証済み攻撃者**: 正規アカウントを侵害した攻撃者
 - **中間者攻撃**: ネットワーク通信を盗聴する攻撃者
 
@@ -181,18 +184,18 @@ export class GetDashboardSystemsHandler {
 
 | エンドポイント | GUEST | OPERATOR | ADMINISTRATOR | SECURITY_OFFICER | 備考 |
 |--------------|-------|----------|---------------|------------------|------|
-| **ダッシュボード表示** |||||||
+| **ダッシュボード表示** ||||||
 | `GET /api/dashboard/systems` | ✓ | ✓ | ✓ | ✓ | 基本情報のみ |
 | `GET /api/dashboard/systems/:id` | ✓ | ✓ | ✓ | ✓ | セキュリティ分類により制限 |
 | `GET /api/dashboard/statistics` | ✓ | ✓ | ✓ | ✓ | 集約統計のみ |
-| **詳細情報** |||||||
+| **詳細情報** ||||||
 | `GET /api/dashboard/systems/:id/vulnerabilities` | ✗ | ✓ | ✓ | ✓ | 脆弱性詳細 |
 | `GET /api/dashboard/systems/:id/configuration` | ✗ | ✓ | ✓ | ✓ | システム構成 |
 | `GET /api/dashboard/systems/:id/security-metrics` | ✗ | ✗ | ✓ | ✓ | セキュリティメトリクス |
 | `GET /api/dashboard/systems/:id/audit-logs` | ✗ | ✗ | ✗ | ✓ | 監査ログ |
-| **データエクスポート** |||||||
+| **データエクスポート** ||||||
 | `POST /api/dashboard/export` | ✗ | ✗ | ✓ | ✓ | 承認必須 |
-| **リアルタイム通信** |||||||
+| **リアルタイム通信** ||||||
 | `WS /api/dashboard/realtime` | ✓ | ✓ | ✓ | ✓ | 認証必須 |
 
 #### 2.2.2 フィールドレベル認可マトリクス
@@ -1301,6 +1304,818 @@ export interface DataVolumeCheck {
   estimatedRecords: number;
   estimatedSizeBytes: number;
   exceedsThreshold: boolean;
+}
+```
+
+#### 5.1.2 エクスポート処理の非同期化
+
+**課題**: 現状の同期的エクスポート処理では、大量データエクスポート時にAPIタイムアウトのリスクがあります。
+
+**解決策**: バックグラウンドジョブキュー（Bull/BullMQ）を使用した非同期処理
+
+```typescript
+/**
+ * エクスポートジョブプロセッサー
+ *
+ * apps/backend/system-mgmt/src/application/dashboard/export/dashboard-export.processor.ts
+ */
+
+import { Processor, Process, OnQueueActive, OnQueueCompleted, OnQueueFailed } from '@nestjs/bull';
+import { Job } from 'bull';
+
+@Processor('dashboard-export')
+export class DashboardExportProcessor {
+  constructor(
+    private readonly exportService: DashboardExportService,
+    private readonly notificationService: NotificationService,
+    private readonly auditLogger: SecurityAuditLogger,
+    private readonly encryptionService: DataEncryptionService,
+    private readonly fieldVisibilityService: DashboardFieldVisibilityService,
+    private readonly logger: Logger
+  ) {}
+
+  /**
+   * エクスポートジョブ処理
+   */
+  @Process('generate-export')
+  async handleExportGeneration(job: Job<DashboardExportJobData>): Promise<ExportJobResult> {
+    const { exportRequest, user, approvalId } = job.data;
+
+    this.logger.log(`Starting export job ${job.id} for user ${user.id}`);
+
+    try {
+      // 1. ジョブ進捗更新（0%）
+      await job.progress(0);
+
+      // 2. データ取得（ユーザー権限に応じてフィルタリング）
+      await job.progress(10);
+      const data = await this.fetchDataForExport(exportRequest, user);
+
+      // 3. フィールド可視性決定
+      await job.progress(20);
+      const fieldVisibility = await this.fieldVisibilityService.determineVisibility(user.role);
+
+      // 4. 機密情報マスキング
+      await job.progress(30);
+      const maskedData = await this.applyExportMasking(data, fieldVisibility, user.role);
+
+      // 5. エクスポートファイル生成
+      await job.progress(50);
+      const exportFile = await this.generateExportFile(
+        maskedData,
+        exportRequest.format
+      );
+
+      // 6. ファイル暗号化
+      await job.progress(70);
+      const encryptedFile = await this.encryptionService.encryptFile(
+        exportFile,
+        {
+          algorithm: 'AES-256-GCM',
+          userId: user.id,
+          exportId: job.id
+        }
+      );
+
+      // 7. S3/Azure Blobへアップロード
+      await job.progress(85);
+      const uploadResult = await this.uploadEncryptedFile(encryptedFile);
+
+      // 8. 署名付き一時URLを生成（1時間有効）
+      await job.progress(95);
+      const downloadUrl = await this.generateSecureDownloadUrl(
+        uploadResult.fileId,
+        user.id,
+        3600  // 1時間
+      );
+
+      // 9. エクスポート成功監査ログ
+      await this.auditLogger.logSuccessfulExport({
+        userId: user.id,
+        jobId: job.id,
+        approvalId,
+        dataScope: exportRequest.dataScope,
+        recordCount: data.length,
+        fileSize: encryptedFile.size,
+        fileHash: encryptedFile.hash,
+        downloadUrl,
+        timestamp: new Date()
+      });
+
+      // 10. ユーザーに完了通知
+      await this.notificationService.notifyExportReady({
+        userId: user.id,
+        jobId: job.id,
+        downloadUrl,
+        expiresAt: new Date(Date.now() + 3600000),
+        fileSize: encryptedFile.size,
+        recordCount: data.length
+      });
+
+      // 11. ジョブ完了（100%）
+      await job.progress(100);
+
+      return {
+        status: 'SUCCESS',
+        downloadUrl,
+        fileId: uploadResult.fileId,
+        fileHash: encryptedFile.hash,
+        recordCount: data.length,
+        fileSize: encryptedFile.size,
+        expiresAt: new Date(Date.now() + 3600000)
+      };
+
+    } catch (error) {
+      this.logger.error(`Export job ${job.id} failed`, error);
+
+      // エラー監査ログ
+      await this.auditLogger.logFailedExport({
+        userId: user.id,
+        jobId: job.id,
+        approvalId,
+        error: error.message,
+        timestamp: new Date()
+      });
+
+      // ユーザーにエラー通知
+      await this.notificationService.notifyExportFailed({
+        userId: user.id,
+        jobId: job.id,
+        error: this.sanitizeErrorMessage(error),
+        timestamp: new Date()
+      });
+
+      throw error;
+    }
+  }
+
+  /**
+   * ジョブアクティブ時の処理
+   */
+  @OnQueueActive()
+  async onActive(job: Job<DashboardExportJobData>) {
+    this.logger.log(`Export job ${job.id} is now active`);
+
+    // ジョブ開始通知
+    await this.notificationService.notifyExportStarted({
+      userId: job.data.user.id,
+      jobId: job.id,
+      estimatedDuration: this.estimateJobDuration(job.data.exportRequest)
+    });
+  }
+
+  /**
+   * ジョブ完了時の処理
+   */
+  @OnQueueCompleted()
+  async onCompleted(job: Job<DashboardExportJobData>, result: ExportJobResult) {
+    this.logger.log(`Export job ${job.id} completed successfully`);
+
+    // 完了メトリクス記録
+    await this.recordJobMetrics(job, result);
+  }
+
+  /**
+   * ジョブ失敗時の処理
+   */
+  @OnQueueFailed()
+  async onFailed(job: Job<DashboardExportJobData>, error: Error) {
+    this.logger.error(`Export job ${job.id} failed`, error);
+
+    // 失敗メトリクス記録
+    await this.recordJobFailure(job, error);
+  }
+
+  /**
+   * データ取得（権限に応じてフィルタリング）
+   */
+  private async fetchDataForExport(
+    exportRequest: DashboardExportRequest,
+    user: User
+  ): Promise<DashboardSystemViewEntity[]> {
+    // PostgreSQL RLSポリシーが自動適用される
+    const query = this.dashboardRepository.createQueryBuilder('system')
+      .where('system.isDeleted = :isDeleted', { isDeleted: false });
+
+    // エクスポート対象システムIDでフィルタリング
+    if (exportRequest.dataScope.systemIds?.length > 0) {
+      query.andWhere('system.systemId IN (:...systemIds)', {
+        systemIds: exportRequest.dataScope.systemIds
+      });
+    }
+
+    // 追加フィルター適用
+    if (exportRequest.dataScope.filters) {
+      this.applyFilters(query, exportRequest.dataScope.filters);
+    }
+
+    return query.getMany();
+  }
+
+  /**
+   * エクスポート用マスキング
+   */
+  private async applyExportMasking(
+    data: DashboardSystemViewEntity[],
+    fieldVisibility: DashboardSystemFieldVisibility,
+    userRole: UserRole
+  ): Promise<any[]> {
+    return data.map(record => {
+      const masked: any = {};
+
+      // フィールド可視性に基づいてフィルタリング
+      Object.keys(record).forEach(key => {
+        if (this.isFieldVisibleForExport(key, fieldVisibility)) {
+          masked[key] = record[key];
+        }
+      });
+
+      return masked;
+    });
+  }
+
+  /**
+   * エクスポートファイル生成
+   */
+  private async generateExportFile(
+    data: any[],
+    format: 'CSV' | 'JSON' | 'XLSX'
+  ): Promise<ExportFile> {
+    switch (format) {
+      case 'CSV':
+        return this.generateCSV(data);
+      case 'JSON':
+        return this.generateJSON(data);
+      case 'XLSX':
+        return this.generateXLSX(data);
+      default:
+        throw new Error(`Unsupported format: ${format}`);
+    }
+  }
+
+  /**
+   * CSV生成
+   */
+  private async generateCSV(data: any[]): Promise<ExportFile> {
+    const Papa = require('papaparse');
+
+    const csv = Papa.unparse(data, {
+      header: true,
+      quotes: true,
+      quoteChar: '"',
+      escapeChar: '"',
+      delimiter: ',',
+      newline: '\n'
+    });
+
+    const buffer = Buffer.from(csv, 'utf-8');
+
+    return {
+      buffer,
+      mimeType: 'text/csv',
+      filename: `dashboard-export-${Date.now()}.csv`,
+      size: buffer.length
+    };
+  }
+
+  /**
+   * JSON生成
+   */
+  private async generateJSON(data: any[]): Promise<ExportFile> {
+    const json = JSON.stringify(data, null, 2);
+    const buffer = Buffer.from(json, 'utf-8');
+
+    return {
+      buffer,
+      mimeType: 'application/json',
+      filename: `dashboard-export-${Date.now()}.json`,
+      size: buffer.length
+    };
+  }
+
+  /**
+   * Excel生成
+   */
+  private async generateXLSX(data: any[]): Promise<ExportFile> {
+    const XLSX = require('xlsx');
+
+    const worksheet = XLSX.utils.json_to_sheet(data);
+    const workbook = XLSX.utils.book_new();
+    XLSX.utils.book_append_sheet(workbook, worksheet, 'Dashboard Export');
+
+    const buffer = XLSX.write(workbook, { type: 'buffer', bookType: 'xlsx' });
+
+    return {
+      buffer,
+      mimeType: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+      filename: `dashboard-export-${Date.now()}.xlsx`,
+      size: buffer.length
+    };
+  }
+
+  /**
+   * 暗号化ファイルのアップロード
+   */
+  private async uploadEncryptedFile(encryptedFile: EncryptedFile): Promise<UploadResult> {
+    // S3またはAzure Blobへアップロード
+    const fileId = `export-${Date.now()}-${randomUUID()}`;
+
+    await this.storageService.upload({
+      fileId,
+      buffer: encryptedFile.buffer,
+      mimeType: encryptedFile.mimeType,
+      metadata: {
+        encrypted: true,
+        algorithm: encryptedFile.algorithm,
+        hash: encryptedFile.hash
+      }
+    });
+
+    return { fileId };
+  }
+
+  /**
+   * セキュアダウンロードURL生成
+   */
+  private async generateSecureDownloadUrl(
+    fileId: string,
+    userId: string,
+    expiresInSeconds: number
+  ): Promise<string> {
+    // 署名付きURL生成（S3 presigned URL / Azure SAS token）
+    return this.storageService.generatePresignedUrl(fileId, {
+      expiresIn: expiresInSeconds,
+      userId,
+      action: 'download'
+    });
+  }
+
+  /**
+   * エラーメッセージのサニタイズ（情報漏洩防止）
+   */
+  private sanitizeErrorMessage(error: any): string {
+    // 内部実装詳細を隠蔽
+    if (error instanceof DatabaseError) {
+      return 'データベースエラーが発生しました';
+    }
+    if (error instanceof FileSystemError) {
+      return 'ファイル処理エラーが発生しました';
+    }
+    return 'エクスポート処理中にエラーが発生しました';
+  }
+
+  /**
+   * ジョブ所要時間の推定
+   */
+  private estimateJobDuration(exportRequest: DashboardExportRequest): number {
+    // レコード数に基づく推定（100レコード = 1秒）
+    const estimatedRecords = exportRequest.dataScope.systemIds?.length || 100;
+    return Math.ceil(estimatedRecords / 100) * 1000;  // ミリ秒
+  }
+
+  /**
+   * ジョブメトリクス記録
+   */
+  private async recordJobMetrics(job: Job, result: ExportJobResult) {
+    await this.metricsService.recordExportJobMetrics({
+      jobId: job.id,
+      userId: job.data.user.id,
+      recordCount: result.recordCount,
+      fileSize: result.fileSize,
+      duration: job.finishedOn! - job.processedOn!,
+      status: 'SUCCESS'
+    });
+  }
+
+  /**
+   * ジョブ失敗メトリクス記録
+   */
+  private async recordJobFailure(job: Job, error: Error) {
+    await this.metricsService.recordExportJobMetrics({
+      jobId: job.id,
+      userId: job.data.user.id,
+      duration: job.finishedOn! - job.processedOn!,
+      status: 'FAILED',
+      errorType: error.constructor.name
+    });
+  }
+
+  private isFieldVisibleForExport(
+    fieldName: string,
+    visibility: DashboardSystemFieldVisibility
+  ): boolean {
+    // フィールド可視性チェック（セクション3.2と同じロジック）
+    for (const category of Object.keys(visibility)) {
+      if (visibility[category][fieldName] === true) {
+        return true;
+      }
+    }
+    return false;
+  }
+
+  private applyFilters(query: any, filters: DashboardFilterCriteria) {
+    // フィルター適用ロジック
+    if (filters.criticality) {
+      query.andWhere('system.criticality = :criticality', { criticality: filters.criticality });
+    }
+    if (filters.hasVulnerabilities) {
+      query.andWhere('system.vulnerabilityCount > 0');
+    }
+    // その他のフィルター
+  }
+}
+
+/**
+ * 型定義
+ */
+export interface DashboardExportJobData {
+  exportRequest: DashboardExportRequest;
+  user: User;
+  approvalId?: string;
+}
+
+export interface ExportJobResult {
+  status: 'SUCCESS' | 'FAILED';
+  downloadUrl?: string;
+  fileId?: string;
+  fileHash?: string;
+  recordCount?: number;
+  fileSize?: number;
+  expiresAt?: Date;
+  error?: string;
+}
+
+export interface ExportFile {
+  buffer: Buffer;
+  mimeType: string;
+  filename: string;
+  size: number;
+}
+
+export interface EncryptedFile extends ExportFile {
+  algorithm: string;
+  hash: string;
+}
+
+export interface UploadResult {
+  fileId: string;
+}
+```
+
+**コントローラー統合（非同期エクスポート）**:
+
+```typescript
+/**
+ * ダッシュボードエクスポートコントローラー
+ */
+@Controller('dashboard/export')
+@UseGuards(AuthGuard)
+export class DashboardExportController {
+  constructor(
+    @InjectQueue('dashboard-export') private readonly exportQueue: Queue,
+    private readonly authService: DashboardAuthorizationService,
+    private readonly auditLogger: SecurityAuditLogger
+  ) {}
+
+  /**
+   * エクスポート要求（非同期）
+   */
+  @Post()
+  async requestExport(
+    @Body() dto: DashboardExportRequestDto,
+    @CurrentUser() user: User
+  ): Promise<ExportRequestResponse> {
+    // 1. エクスポート権限チェック
+    const authResult = await this.authService.authorizeExport(
+      user,
+      dto.dataScope
+    );
+
+    if (!authResult.isAllowed()) {
+      await this.auditLogger.logUnauthorizedExportAttempt({
+        userId: user.id,
+        dataScope: dto.dataScope,
+        reason: authResult.getReason(),
+        timestamp: new Date()
+      });
+
+      throw new ForbiddenException('エクスポート権限がありません');
+    }
+
+    // 2. データ量推定
+    const estimatedRecords = dto.dataScope.systemIds?.length ||
+      await this.estimateRecordCount(dto.dataScope.filters);
+
+    // 3. 大量エクスポートの場合は承認必須
+    if (estimatedRecords > 1000) {
+      // 承認ワークフロー開始（セクション5.1.1と同じ）
+      // ...
+      return {
+        status: 'PENDING_APPROVAL',
+        message: '大量データエクスポートには承認が必要です'
+      };
+    }
+
+    // 4. ジョブをキューに追加
+    const job = await this.exportQueue.add('generate-export', {
+      exportRequest: dto,
+      user: {
+        id: user.id,
+        role: user.role,
+        email: user.email
+      }
+    }, {
+      // ジョブオプション
+      attempts: 3,  // 最大3回リトライ
+      backoff: {
+        type: 'exponential',
+        delay: 5000  // 5秒から開始
+      },
+      removeOnComplete: false,  // 完了後もジョブ情報を保持
+      removeOnFail: false,
+      timeout: 600000  // 10分タイムアウト
+    });
+
+    // 5. エクスポート要求監査ログ
+    await this.auditLogger.logExportRequested({
+      userId: user.id,
+      jobId: job.id,
+      dataScope: dto.dataScope,
+      estimatedRecords,
+      timestamp: new Date()
+    });
+
+    return {
+      status: 'PROCESSING',
+      jobId: job.id,
+      message: 'エクスポート処理を開始しました。完了時に通知されます。',
+      estimatedDuration: Math.ceil(estimatedRecords / 100) * 1000
+    };
+  }
+
+  /**
+   * エクスポートジョブステータス取得
+   */
+  @Get(':jobId/status')
+  async getExportStatus(
+    @Param('jobId') jobId: string,
+    @CurrentUser() user: User
+  ): Promise<ExportJobStatusResponse> {
+    const job = await this.exportQueue.getJob(jobId);
+
+    if (!job) {
+      throw new NotFoundException('エクスポートジョブが見つかりません');
+    }
+
+    // ジョブの所有者確認
+    if (job.data.user.id !== user.id) {
+      throw new ForbiddenException('このジョブにアクセスする権限がありません');
+    }
+
+    const state = await job.getState();
+    const progress = job.progress();
+
+    return {
+      jobId: job.id,
+      status: state,
+      progress,
+      createdAt: new Date(job.timestamp),
+      processedAt: job.processedOn ? new Date(job.processedOn) : undefined,
+      finishedAt: job.finishedOn ? new Date(job.finishedOn) : undefined,
+      result: job.returnvalue
+    };
+  }
+
+  /**
+   * エクスポートファイルダウンロード
+   */
+  @Get('download/:fileId')
+  async downloadExport(
+    @Param('fileId') fileId: string,
+    @Query('token') token: string,
+    @CurrentUser() user: User,
+    @Res() res: Response
+  ) {
+    // 1. トークン検証
+    const isValidToken = await this.verifyDownloadToken(fileId, token, user.id);
+
+    if (!isValidToken) {
+      throw new ForbiddenException('無効なダウンロードトークンです');
+    }
+
+    // 2. ファイル取得
+    const file = await this.storageService.getFile(fileId);
+
+    // 3. ダウンロード監査ログ
+    await this.auditLogger.logFileDownload({
+      userId: user.id,
+      fileId,
+      fileSize: file.size,
+      timestamp: new Date()
+    });
+
+    // 4. ファイル送信
+    res.set({
+      'Content-Type': file.mimeType,
+      'Content-Disposition': `attachment; filename="${file.filename}"`,
+      'Content-Length': file.size,
+      'Cache-Control': 'no-cache, no-store, must-revalidate'
+    });
+
+    res.send(file.buffer);
+  }
+
+  private async estimateRecordCount(filters?: DashboardFilterCriteria): Promise<number> {
+    // フィルター条件に基づくレコード数推定
+    return 100;  // 簡易実装
+  }
+
+  private async verifyDownloadToken(
+    fileId: string,
+    token: string,
+    userId: string
+  ): Promise<boolean> {
+    // トークン検証ロジック（セクション5.1.1と同じ）
+    const [expiry, signature] = token.split('.');
+    const now = Date.now();
+
+    if (parseInt(expiry) < now) {
+      return false;  // 期限切れ
+    }
+
+    // HMAC署名検証
+    const expectedSignature = this.generateTokenSignature(fileId, userId, expiry);
+    return signature === expectedSignature;
+  }
+
+  private generateTokenSignature(fileId: string, userId: string, expiry: string): string {
+    const hmac = createHmac('sha256', process.env.EXPORT_TOKEN_SECRET!);
+    hmac.update(`${fileId}:${userId}:${expiry}`);
+    return hmac.digest('hex');
+  }
+}
+
+/**
+ * レスポンス型定義
+ */
+export interface ExportRequestResponse {
+  status: 'PROCESSING' | 'PENDING_APPROVAL' | 'DENIED';
+  jobId?: string;
+  approvalRequestId?: string;
+  message: string;
+  estimatedDuration?: number;
+}
+
+export interface ExportJobStatusResponse {
+  jobId: string;
+  status: 'waiting' | 'active' | 'completed' | 'failed' | 'delayed';
+  progress: number;
+  createdAt: Date;
+  processedAt?: Date;
+  finishedAt?: Date;
+  result?: ExportJobResult;
+}
+```
+
+**Bull/BullMQモジュール設定**:
+
+```typescript
+/**
+ * エクスポートキューモジュール設定
+ */
+@Module({
+  imports: [
+    BullModule.forRoot({
+      redis: {
+        host: process.env.REDIS_HOST,
+        port: parseInt(process.env.REDIS_PORT || '6379'),
+        password: process.env.REDIS_PASSWORD,
+        db: 1  // エクスポート専用DB
+      },
+      defaultJobOptions: {
+        removeOnComplete: 100,  // 最新100件の完了ジョブを保持
+        removeOnFail: 1000,     // 最新1000件の失敗ジョブを保持
+      }
+    }),
+    BullModule.registerQueue({
+      name: 'dashboard-export',
+      limiter: {
+        max: 5,        // 同時実行ジョブ数: 5
+        duration: 1000 // 1秒あたり
+      }
+    })
+  ],
+  providers: [DashboardExportProcessor],
+  controllers: [DashboardExportController],
+  exports: [BullModule]
+})
+export class DashboardExportModule {}
+```
+
+**通知サービス（Microsoft Teams統合）**:
+
+```typescript
+/**
+ * エクスポート完了通知サービス
+ */
+@Injectable()
+export class ExportNotificationService {
+  constructor(
+    private readonly teamsWebhookService: TeamsWebhookService,
+    private readonly emailService: EmailService
+  ) {}
+
+  /**
+   * エクスポート完了通知
+   */
+  async notifyExportReady(params: {
+    userId: string;
+    jobId: string;
+    downloadUrl: string;
+    expiresAt: Date;
+    fileSize: number;
+    recordCount: number;
+  }) {
+    const user = await this.getUserInfo(params.userId);
+
+    // Microsoft Teams通知
+    await this.teamsWebhookService.sendMessage({
+      title: '📊 ダッシュボードエクスポート完了',
+      text: `${user.name} さん、データエクスポートが完了しました`,
+      sections: [
+        {
+          activityTitle: 'エクスポート詳細',
+          facts: [
+            { name: 'ジョブID', value: params.jobId },
+            { name: 'レコード数', value: params.recordCount.toString() },
+            { name: 'ファイルサイズ', value: this.formatFileSize(params.fileSize) },
+            { name: '有効期限', value: params.expiresAt.toLocaleString('ja-JP') }
+          ]
+        }
+      ],
+      potentialAction: [
+        {
+          '@type': 'OpenUri',
+          name: 'ダウンロード',
+          targets: [{ os: 'default', uri: params.downloadUrl }]
+        }
+      ]
+    });
+
+    // メール通知
+    await this.emailService.send({
+      to: user.email,
+      subject: 'ダッシュボードエクスポート完了',
+      template: 'export-ready',
+      context: {
+        userName: user.name,
+        downloadUrl: params.downloadUrl,
+        expiresAt: params.expiresAt,
+        recordCount: params.recordCount,
+        fileSize: this.formatFileSize(params.fileSize)
+      }
+    });
+  }
+
+  /**
+   * エクスポート失敗通知
+   */
+  async notifyExportFailed(params: {
+    userId: string;
+    jobId: string;
+    error: string;
+    timestamp: Date;
+  }) {
+    const user = await this.getUserInfo(params.userId);
+
+    // Microsoft Teams通知
+    await this.teamsWebhookService.sendMessage({
+      title: '⚠️ ダッシュボードエクスポート失敗',
+      text: `${user.name} さん、データエクスポートが失敗しました`,
+      themeColor: 'FF0000',
+      sections: [
+        {
+          activityTitle: 'エラー詳細',
+          facts: [
+            { name: 'ジョブID', value: params.jobId },
+            { name: 'エラー', value: params.error },
+            { name: '発生時刻', value: params.timestamp.toLocaleString('ja-JP') }
+          ]
+        }
+      ]
+    });
+  }
+
+  private formatFileSize(bytes: number): string {
+    if (bytes < 1024) return `${bytes} B`;
+    if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(2)} KB`;
+    return `${(bytes / (1024 * 1024)).toFixed(2)} MB`;
+  }
+
+  private async getUserInfo(userId: string) {
+    // ユーザー情報取得
+    return { name: 'User', email: 'user@example.com' };
+  }
 }
 ```
 
