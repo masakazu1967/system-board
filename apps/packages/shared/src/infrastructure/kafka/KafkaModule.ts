@@ -14,7 +14,7 @@ import { KafkaEventPublisher } from './KafkaEventPublisher';
       {
         name: 'KAFKA_CLIENT',
         imports: [ConfigModule],
-        useFactory: async (configService: ConfigService) => ({
+        useFactory: (configService: ConfigService) => ({
           transport: Transport.KAFKA,
           options: {
             client: {

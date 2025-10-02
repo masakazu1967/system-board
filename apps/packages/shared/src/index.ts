@@ -8,4 +8,4 @@ export * from './application';
 export * from './infrastructure';
 
 // Shared Module
-export * from './shared.module';
+export * from './SharedModule';

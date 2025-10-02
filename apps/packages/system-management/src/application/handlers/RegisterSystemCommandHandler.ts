@@ -34,24 +34,23 @@ export class RegisterSystemCommandHandler {
     });
 
     // Value Objects 作成
-    const name = new SystemName(command.name);
+    const name = SystemName.create(command.name);
     const type = SystemTypeHelper.fromString(command.type);
-    const host = new HostConfiguration(command.host);
+    const host = HostConfiguration.create(command.host);
     const securityClassification = SecurityClassificationHelper.fromString(
       command.securityClassification,
     );
-    const criticality = new CriticalityLevel(command.criticality);
+    const criticality = CriticalityLevel.create(command.criticality);
 
     // Packages 作成
     const packages = SystemPackages.fromArray(
-      command.packages.map(
-        (p) =>
-          new Package({
-            name: p.name,
-            version: p.version,
-            dependencies: p.dependencies,
-            vulnerabilities: p.vulnerabilities,
-          }),
+      command.packages.map((p) =>
+        Package.create({
+          name: p.name,
+          version: p.version,
+          dependencies: p.dependencies,
+          vulnerabilities: p.vulnerabilities,
+        }),
       ),
     );
 

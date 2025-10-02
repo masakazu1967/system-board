@@ -3,6 +3,7 @@ import { ClientKafka } from '@nestjs/microservices';
 import { lastValueFrom } from 'rxjs';
 import { DomainEvent } from '../../domain/base/DomainEvent';
 import { EventPublisher } from '../../application/interfaces/EventPublisher';
+import { KAFKA_TOPICS, ALL_KAFKA_TOPICS } from './kafka-topics.constants';
 
 /**
  * Kafka Event Publisher
@@ -19,14 +20,7 @@ export class KafkaEventPublisher implements EventPublisher, OnModuleInit {
 
   async onModuleInit(): Promise<void> {
     // レスポンストピックの購読設定
-    const topics = [
-      'system-events',
-      'vulnerability-events',
-      'task-events',
-      'security-events',
-      'urgent-events',
-      'domain-events',
-    ];
+    const topics = [...ALL_KAFKA_TOPICS, 'urgent-events', 'domain-events'];
 
     topics.forEach((topic) => {
       this.kafkaClient.subscribeToResponseOf(topic);
@@ -83,20 +77,20 @@ export class KafkaEventPublisher implements EventPublisher, OnModuleInit {
   private determineTopicByEventType(eventType: string): string {
     const topicMap: Record<string, string> = {
       // System Management Context
-      SystemRegistered: 'system-events',
-      SystemConfigurationUpdated: 'system-events',
-      SystemDecommissioned: 'system-events',
-      SystemSecurityAlert: 'security-events',
+      SystemRegistered: KAFKA_TOPICS.SYSTEM_EVENTS,
+      SystemConfigurationUpdated: KAFKA_TOPICS.SYSTEM_EVENTS,
+      SystemDecommissioned: KAFKA_TOPICS.SYSTEM_EVENTS,
+      SystemSecurityAlert: KAFKA_TOPICS.SECURITY_EVENTS,
 
       // Vulnerability Management Context
-      VulnerabilityDetected: 'vulnerability-events',
-      VulnerabilityScanCompleted: 'vulnerability-events',
-      VulnerabilityResolved: 'vulnerability-events',
-      VulnerabilityScanInitiated: 'vulnerability-events',
+      VulnerabilityDetected: KAFKA_TOPICS.VULNERABILITY_EVENTS,
+      VulnerabilityScanCompleted: KAFKA_TOPICS.VULNERABILITY_EVENTS,
+      VulnerabilityResolved: KAFKA_TOPICS.VULNERABILITY_EVENTS,
+      VulnerabilityScanInitiated: KAFKA_TOPICS.VULNERABILITY_EVENTS,
 
       // Task Management Context
-      TaskCreated: 'task-events',
-      TaskCompleted: 'task-events',
+      TaskCreated: KAFKA_TOPICS.TASK_EVENTS,
+      TaskCompleted: KAFKA_TOPICS.TASK_EVENTS,
       HighPriorityTaskCreated: 'urgent-events',
     };
 

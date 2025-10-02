@@ -8,7 +8,8 @@ import {
 import { EventSubscriber } from '../../application/interfaces/EventSubscriber';
 import { EventHandler } from '../../application/interfaces/EventHandler';
 import { DomainEvent } from '../../domain/base/DomainEvent';
-import type { KurrentDBClient } from './KurrentDBClient.interface';
+import type { KurrentDBClient } from './KurrentDBClient';
+import { KAFKA_TOPICS } from '../kafka/kafka-topics.constants';
 
 /**
  * Kurrent Kafka Subscriber
@@ -35,7 +36,7 @@ export class KurrentKafkaSubscriber implements EventSubscriber {
   /**
    * システムイベントの受信（NestJS @EventPattern デコレータ使用）
    */
-  @EventPattern('system-events')
+  @EventPattern(KAFKA_TOPICS.SYSTEM_EVENTS)
   async handleSystemEvents(
     @Payload() payload: DomainEvent,
     @Ctx() context: KafkaContext,
@@ -46,7 +47,7 @@ export class KurrentKafkaSubscriber implements EventSubscriber {
   /**
    * 脆弱性イベントの受信
    */
-  @EventPattern('vulnerability-events')
+  @EventPattern(KAFKA_TOPICS.VULNERABILITY_EVENTS)
   async handleVulnerabilityEvents(
     @Payload() payload: DomainEvent,
     @Ctx() context: KafkaContext,
@@ -57,7 +58,7 @@ export class KurrentKafkaSubscriber implements EventSubscriber {
   /**
    * タスクイベントの受信
    */
-  @EventPattern('task-events')
+  @EventPattern(KAFKA_TOPICS.TASK_EVENTS)
   async handleTaskEvents(
     @Payload() payload: DomainEvent,
     @Ctx() context: KafkaContext,
@@ -68,7 +69,7 @@ export class KurrentKafkaSubscriber implements EventSubscriber {
   /**
    * セキュリティイベントの受信
    */
-  @EventPattern('security-events')
+  @EventPattern(KAFKA_TOPICS.SECURITY_EVENTS)
   async handleSecurityEvents(
     @Payload() payload: DomainEvent,
     @Ctx() context: KafkaContext,

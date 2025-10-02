@@ -1,41 +1,61 @@
 import { PrimitiveValueObject } from 'shared';
+import { z } from 'zod';
+
+/**
+ * System Name Constants
+ */
+const MIN_LENGTH = 1;
+const MAX_LENGTH = 255;
+
+/**
+ * System Name Zod Schema
+ * システム名（1-255文字、一意制約）のバリデーションスキーマ
+ */
+export const SystemNameSchema = z
+  .string()
+  .min(MIN_LENGTH, `System name must be at least ${MIN_LENGTH} character`)
+  .max(MAX_LENGTH, `System name must not exceed ${MAX_LENGTH} characters`)
+  .trim();
 
 /**
  * System Name Value Object
  * システム名（1-255文字、一意制約）
  */
 export class SystemName extends PrimitiveValueObject<string> {
-  private static readonly MIN_LENGTH = 1;
-  private static readonly MAX_LENGTH = 255;
+  public static readonly MIN_LENGTH = MIN_LENGTH;
+  public static readonly MAX_LENGTH = MAX_LENGTH;
 
-  constructor(value: string) {
-    SystemName.validate(value);
+  private constructor(value: string) {
     super(value);
   }
 
   /**
-   * バリデーション
+   * ファクトリーメソッド: バリデーション付き作成
+   */
+  public static create(value: string): SystemName {
+    const validatedValue = SystemNameSchema.parse(value);
+    return new SystemName(validatedValue);
+  }
+
+  /**
+   * ファクトリーメソッド: バリデーションなし作成（内部使用のみ）
+   */
+  public static createUnsafe(value: string): SystemName {
+    return new SystemName(value);
+  }
+
+  /**
+   * バリデーションのみ実行
    */
   public static validate(value: string): void {
-    if (!SystemName.isValid(value)) {
-      throw new Error(
-        `Invalid SystemName: must be between ${SystemName.MIN_LENGTH} and ${SystemName.MAX_LENGTH} characters`,
-      );
-    }
+    SystemNameSchema.parse(value);
   }
 
   /**
    * 有効性チェック
    */
   public static isValid(value: string): boolean {
-    if (!value || typeof value !== 'string') {
-      return false;
-    }
-    const trimmedValue = value.trim();
-    return (
-      trimmedValue.length >= SystemName.MIN_LENGTH &&
-      trimmedValue.length <= SystemName.MAX_LENGTH
-    );
+    return SystemNameSchema.safeParse(value).success;
   }
 
   public toString(): string {

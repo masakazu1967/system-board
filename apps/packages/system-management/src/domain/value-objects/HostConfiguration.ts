@@ -1,62 +1,94 @@
 import { ValueObject } from 'shared';
+import { z } from 'zod';
+
+/**
+ * Host Configuration Zod Schema
+ * ホスト構成情報のバリデーションスキーマ
+ */
+export const HostConfigurationSchema = z.object({
+  cpu: z
+    .number()
+    .int({ message: 'CPU cores must be an integer' })
+    .min(1, 'CPU cores must be at least 1')
+    .max(256, 'CPU cores must not exceed 256'),
+  memory: z
+    .number()
+    .int({ message: 'Memory must be an integer (GB)' })
+    .min(1, 'Memory must be at least 1GB')
+    .max(2048, 'Memory must not exceed 2048GB'),
+  storage: z
+    .number()
+    .int({ message: 'Storage must be an integer (GB)' })
+    .min(1, 'Storage must be at least 1GB')
+    .max(100000, 'Storage must not exceed 100000GB'),
+  encryptionEnabled: z.boolean(),
+});
 
 /**
  * Host Configuration Value Object
  * ホスト構成情報
  */
-interface HostConfigurationProps {
-  cpu: number;
-  memory: number;
-  storage: number;
-  encryptionEnabled: boolean;
-}
+export type HostConfigurationProps = z.infer<typeof HostConfigurationSchema>;
 
 export class HostConfiguration extends ValueObject<HostConfigurationProps> {
-  constructor(props: HostConfigurationProps) {
-    HostConfiguration.validate(props);
+  private constructor(props: HostConfigurationProps) {
     super(props);
   }
 
   /**
-   * バリデーション
+   * ファクトリーメソッド: バリデーション付き作成
    */
-  private static validate(props: HostConfigurationProps): void {
-    if (props.cpu <= 0) {
-      throw new Error('CPU must be greater than 0');
-    }
-    if (props.memory <= 0) {
-      throw new Error('Memory must be greater than 0');
-    }
-    if (props.storage <= 0) {
-      throw new Error('Storage must be greater than 0');
-    }
+  public static create(props: HostConfigurationProps): HostConfiguration {
+    const validatedProps = HostConfigurationSchema.parse(props);
+    return new HostConfiguration(validatedProps);
+  }
+
+  /**
+   * ファクトリーメソッド: バリデーションなし作成（内部使用のみ）
+   */
+  public static createUnsafe(props: HostConfigurationProps): HostConfiguration {
+    return new HostConfiguration(props);
+  }
+
+  /**
+   * バリデーションのみ実行
+   */
+  public static validate(props: HostConfigurationProps): void {
+    HostConfigurationSchema.parse(props);
+  }
+
+  /**
+   * バリデーション結果確認
+   */
+  public static isValid(props: HostConfigurationProps): boolean {
+    return HostConfigurationSchema.safeParse(props).success;
   }
 
   /**
    * 暗号化有効判定
    */
   public isEncryptionEnabled(): boolean {
-    return this.getProps().encryptionEnabled;
+    return this.props.encryptionEnabled;
   }
 
   /**
    * CPU取得
    */
   public getCpu(): number {
-    return this.getProps().cpu;
+    return this.props.cpu;
   }
 
   /**
    * メモリ取得
    */
   public getMemory(): number {
-    return this.getProps().memory;
+    return this.props.memory;
   }
 
   /**
    * ストレージ取得
    */
   public getStorage(): number {
-    return this.getProps().storage;
+    return this.props.storage;
   }
 }

@@ -63,7 +63,7 @@ export class SystemPackages extends ValueObject<SystemPackagesProps> {
         `Package ${pkg.getName()} has critical vulnerabilities and cannot be added`,
       );
     }
-    const newPackages = [...this.getProps().packages, pkg];
+    const newPackages = [...this.props.packages, pkg];
     return new SystemPackages({ packages: newPackages });
   }
 
@@ -71,10 +71,10 @@ export class SystemPackages extends ValueObject<SystemPackagesProps> {
    * パッケージ削除
    */
   public remove(packageName: string): SystemPackages {
-    const newPackages = this.getProps().packages.filter(
+    const newPackages = this.props.packages.filter(
       (p) => p.getName() !== packageName,
     );
-    if (newPackages.length === this.getProps().packages.length) {
+    if (newPackages.length === this.props.packages.length) {
       throw new Error(`Package ${packageName} not found`);
     }
     return new SystemPackages({ packages: newPackages });
@@ -84,13 +84,13 @@ export class SystemPackages extends ValueObject<SystemPackagesProps> {
    * パッケージ更新
    */
   public update(updatedPackage: Package): SystemPackages {
-    const index = this.getProps().packages.findIndex(
+    const index = this.props.packages.findIndex(
       (p) => p.getName() === updatedPackage.getName(),
     );
     if (index === -1) {
       throw new Error(`Package ${updatedPackage.getName()} not found`);
     }
-    const newPackages = [...this.getProps().packages];
+    const newPackages = [...this.props.packages];
     newPackages[index] = updatedPackage;
     return new SystemPackages({ packages: newPackages });
   }
@@ -99,7 +99,7 @@ export class SystemPackages extends ValueObject<SystemPackagesProps> {
    * パッケージ存在確認
    */
   public contains(pkg: Package): boolean {
-    return this.getProps().packages.some(
+    return this.props.packages.some(
       (p) => p.getName() === pkg.getName(),
     );
   }
@@ -108,48 +108,48 @@ export class SystemPackages extends ValueObject<SystemPackagesProps> {
    * 空判定
    */
   public isEmpty(): boolean {
-    return this.getProps().packages.length === 0;
+    return this.props.packages.length === 0;
   }
 
   /**
    * パッケージ数
    */
   public count(): number {
-    return this.getProps().packages.length;
+    return this.props.packages.length;
   }
 
   /**
    * 全パッケージ取得
    */
   public getAll(): Package[] {
-    return [...this.getProps().packages];
+    return [...this.props.packages];
   }
 
   /**
    * 名前でパッケージ検索
    */
   public getByName(name: string): Package | null {
-    return this.getProps().packages.find((p) => p.getName() === name) || null;
+    return this.props.packages.find((p) => p.getName() === name) || null;
   }
 
   /**
    * 脆弱性存在確認
    */
   public hasVulnerabilities(): boolean {
-    return this.getProps().packages.some((p) => p.hasKnownVulnerabilities());
+    return this.props.packages.some((p) => p.hasKnownVulnerabilities());
   }
 
   /**
    * 脆弱性パッケージ取得
    */
   public getVulnerablePackages(): Package[] {
-    return this.getProps().packages.filter((p) => p.hasKnownVulnerabilities());
+    return this.props.packages.filter((p) => p.hasKnownVulnerabilities());
   }
 
   /**
    * 全パッケージセキュリティ準拠判定
    */
   public areAllSecurityCompliant(): boolean {
-    return this.getProps().packages.every((p) => p.hasSecurityCompliance());
+    return this.props.packages.every((p) => p.hasSecurityCompliance());
   }
 }

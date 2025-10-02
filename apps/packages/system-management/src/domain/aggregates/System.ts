@@ -2,13 +2,13 @@ import { AggregateRoot, DomainEvent } from 'shared';
 import { SystemId } from '../value-objects/SystemId';
 import { SystemName } from '../value-objects/SystemName';
 import { SystemType } from '../value-objects/SystemType';
-import { SystemStatus, SystemStatusHelper } from '../value-objects/SystemStatus';
+import {
+  SystemStatus,
+  SystemStatusHelper,
+} from '../value-objects/SystemStatus';
 import { HostConfiguration } from '../value-objects/HostConfiguration';
 import { SystemPackages } from '../value-objects/SystemPackages';
-import {
-  SecurityClassification,
-  SecurityClassificationHelper,
-} from '../value-objects/SecurityClassification';
+import { SecurityClassification } from '../value-objects/SecurityClassification';
 import { CriticalityLevel } from '../value-objects/CriticalityLevel';
 import { SystemRegistered } from '../events/SystemRegistered';
 
@@ -53,6 +53,9 @@ export class System extends AggregateRoot<SystemId> {
     const event = new SystemRegistered(
       systemId,
       name,
+      type,
+      host,
+      criticality,
       packages,
       securityClassification,
       1, // initial version
@@ -78,6 +81,9 @@ export class System extends AggregateRoot<SystemId> {
    */
   private applySystemRegistered(event: SystemRegistered): void {
     this._name = event.name;
+    this._type = event.type;
+    this._host = event.host;
+    this._criticality = event.criticality;
     this._packages = event.packages;
     this._securityClassification = event.securityClassification;
     this._status = SystemStatus.ACTIVE;

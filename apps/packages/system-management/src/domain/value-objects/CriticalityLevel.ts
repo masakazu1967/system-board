@@ -1,40 +1,64 @@
 import { PrimitiveValueObject } from 'shared';
+import { z } from 'zod';
+
+/**
+ * Criticality Level Constants
+ */
+const MIN_LEVEL = 1;
+const MAX_LEVEL = 5;
+const HIGH_CRITICALITY_THRESHOLD = 4;
+
+/**
+ * Criticality Level Zod Schema
+ * 重要度レベル（1-5）のバリデーションスキーマ
+ */
+export const CriticalityLevelSchema = z
+  .number()
+  .int({ message: 'Criticality level must be an integer' })
+  .min(MIN_LEVEL, `Criticality level must be at least ${MIN_LEVEL}`)
+  .max(MAX_LEVEL, `Criticality level must not exceed ${MAX_LEVEL}`);
 
 /**
  * Criticality Level Value Object
  * 重要度レベル（1-5）
  */
 export class CriticalityLevel extends PrimitiveValueObject<number> {
-  private static readonly MIN_LEVEL = 1;
-  private static readonly MAX_LEVEL = 5;
-  private static readonly HIGH_CRITICALITY_THRESHOLD = 4;
+  public static readonly MIN_LEVEL = MIN_LEVEL;
+  public static readonly MAX_LEVEL = MAX_LEVEL;
+  public static readonly HIGH_CRITICALITY_THRESHOLD =
+    HIGH_CRITICALITY_THRESHOLD;
 
-  constructor(value: number) {
-    CriticalityLevel.validate(value);
+  private constructor(value: number) {
     super(value);
   }
 
   /**
-   * バリデーション
+   * ファクトリーメソッド: バリデーション付き作成
+   */
+  public static create(value: number): CriticalityLevel {
+    const validatedValue = CriticalityLevelSchema.parse(value);
+    return new CriticalityLevel(validatedValue);
+  }
+
+  /**
+   * ファクトリーメソッド: バリデーションなし作成（内部使用のみ）
+   */
+  public static createUnsafe(value: number): CriticalityLevel {
+    return new CriticalityLevel(value);
+  }
+
+  /**
+   * バリデーションのみ実行
    */
   public static validate(value: number): void {
-    if (!CriticalityLevel.isValid(value)) {
-      throw new Error(
-        `Invalid CriticalityLevel: must be between ${CriticalityLevel.MIN_LEVEL} and ${CriticalityLevel.MAX_LEVEL}`,
-      );
-    }
+    CriticalityLevelSchema.parse(value);
   }
 
   /**
    * 有効性チェック
    */
   public static isValid(value: number): boolean {
-    return (
-      typeof value === 'number' &&
-      Number.isInteger(value) &&
-      value >= CriticalityLevel.MIN_LEVEL &&
-      value <= CriticalityLevel.MAX_LEVEL
-    );
+    return CriticalityLevelSchema.safeParse(value).success;
   }
 
   /**
