@@ -1,5 +1,23 @@
-import { ValueObject } from 'shared';
+import { ValueObject } from '@system-board/shared';
 import { z } from 'zod';
+
+/**
+ * ホスト構成の制約定数
+ */
+const CPU_CORES = {
+  MIN: 1,
+  MAX: 256,
+} as const;
+
+const MEMORY_GB = {
+  MIN: 1,
+  MAX: 2048,
+} as const;
+
+const STORAGE_GB = {
+  MIN: 1,
+  MAX: 100000,
+} as const;
 
 /**
  * Host Configuration Zod Schema
@@ -9,18 +27,18 @@ export const HostConfigurationSchema = z.object({
   cpu: z
     .number()
     .int({ message: 'CPU cores must be an integer' })
-    .min(1, 'CPU cores must be at least 1')
-    .max(256, 'CPU cores must not exceed 256'),
+    .min(CPU_CORES.MIN, `CPU cores must be at least ${CPU_CORES.MIN}`)
+    .max(CPU_CORES.MAX, `CPU cores must not exceed ${CPU_CORES.MAX}`),
   memory: z
     .number()
     .int({ message: 'Memory must be an integer (GB)' })
-    .min(1, 'Memory must be at least 1GB')
-    .max(2048, 'Memory must not exceed 2048GB'),
+    .min(MEMORY_GB.MIN, `Memory must be at least ${MEMORY_GB.MIN}GB`)
+    .max(MEMORY_GB.MAX, `Memory must not exceed ${MEMORY_GB.MAX}GB`),
   storage: z
     .number()
     .int({ message: 'Storage must be an integer (GB)' })
-    .min(1, 'Storage must be at least 1GB')
-    .max(100000, 'Storage must not exceed 100000GB'),
+    .min(STORAGE_GB.MIN, `Storage must be at least ${STORAGE_GB.MIN}GB`)
+    .max(STORAGE_GB.MAX, `Storage must not exceed ${STORAGE_GB.MAX}GB`),
   encryptionEnabled: z.boolean(),
 });
 

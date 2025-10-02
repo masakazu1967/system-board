@@ -1,6 +1,6 @@
 import { Controller, Injectable, Logger, Inject } from '@nestjs/common';
 import {
-  EventPattern,
+  MessagePattern,
   Payload,
   Ctx,
   KafkaContext,
@@ -15,7 +15,7 @@ import { KAFKA_TOPICS } from '../kafka/kafka-topics.constants';
  * Kurrent Kafka Subscriber
  * Kafkaメッセージを受信してKurrent DBに永続化
  * ダブルコミット回避: Kafka → Kurrent DB の非同期永続化
- * NestJS @EventPattern デコレータ使用
+ * NestJS @MessagePattern デコレータ使用（Request-Response）
  */
 @Controller()
 @Injectable()
@@ -34,75 +34,76 @@ export class KurrentKafkaSubscriber implements EventSubscriber {
   }
 
   /**
-   * システムイベントの受信（NestJS @EventPattern デコレータ使用）
+   * システムイベントの受信（NestJS @MessagePattern デコレータ使用）
+   * ACK/NACKによる明示的なオフセットコミット制御
    */
-  @EventPattern(KAFKA_TOPICS.SYSTEM_EVENTS)
+  @MessagePattern(KAFKA_TOPICS.SYSTEM_EVENTS)
   async handleSystemEvents(
     @Payload() payload: DomainEvent,
     @Ctx() context: KafkaContext,
-  ): Promise<void> {
-    await this.handleKafkaMessage(payload, context);
+  ): Promise<{ success: boolean; eventId: string }> {
+    return await this.handleKafkaMessage(payload, context);
   }
 
   /**
    * 脆弱性イベントの受信
    */
-  @EventPattern(KAFKA_TOPICS.VULNERABILITY_EVENTS)
+  @MessagePattern(KAFKA_TOPICS.VULNERABILITY_EVENTS)
   async handleVulnerabilityEvents(
     @Payload() payload: DomainEvent,
     @Ctx() context: KafkaContext,
-  ): Promise<void> {
-    await this.handleKafkaMessage(payload, context);
+  ): Promise<{ success: boolean; eventId: string }> {
+    return await this.handleKafkaMessage(payload, context);
   }
 
   /**
    * タスクイベントの受信
    */
-  @EventPattern(KAFKA_TOPICS.TASK_EVENTS)
+  @MessagePattern(KAFKA_TOPICS.TASK_EVENTS)
   async handleTaskEvents(
     @Payload() payload: DomainEvent,
     @Ctx() context: KafkaContext,
-  ): Promise<void> {
-    await this.handleKafkaMessage(payload, context);
+  ): Promise<{ success: boolean; eventId: string }> {
+    return await this.handleKafkaMessage(payload, context);
   }
 
   /**
    * セキュリティイベントの受信
    */
-  @EventPattern(KAFKA_TOPICS.SECURITY_EVENTS)
+  @MessagePattern(KAFKA_TOPICS.SECURITY_EVENTS)
   async handleSecurityEvents(
     @Payload() payload: DomainEvent,
     @Ctx() context: KafkaContext,
-  ): Promise<void> {
-    await this.handleKafkaMessage(payload, context);
+  ): Promise<{ success: boolean; eventId: string }> {
+    return await this.handleKafkaMessage(payload, context);
   }
 
   /**
    * 緊急イベントの受信
    */
-  @EventPattern('urgent-events')
+  @MessagePattern('urgent-events')
   async handleUrgentEvents(
     @Payload() payload: DomainEvent,
     @Ctx() context: KafkaContext,
-  ): Promise<void> {
-    await this.handleKafkaMessage(payload, context);
+  ): Promise<{ success: boolean; eventId: string }> {
+    return await this.handleKafkaMessage(payload, context);
   }
 
   /**
    * ドメインイベント（汎用）の受信
    */
-  @EventPattern('domain-events')
+  @MessagePattern('domain-events')
   async handleDomainEvents(
     @Payload() payload: DomainEvent,
     @Ctx() context: KafkaContext,
-  ): Promise<void> {
-    await this.handleKafkaMessage(payload, context);
+  ): Promise<{ success: boolean; eventId: string }> {
+    return await this.handleKafkaMessage(payload, context);
   }
 
   private async handleKafkaMessage(
     payload: DomainEvent,
     context: KafkaContext,
-  ): Promise<void> {
+  ): Promise<{ success: boolean; eventId: string }> {
     const originalMessage = context.getMessage();
     const topic = context.getTopic();
     const partition = context.getPartition();
@@ -121,12 +122,17 @@ export class KurrentKafkaSubscriber implements EventSubscriber {
         topic,
         partition,
       });
+
+      // 成功応答（ACK） → Kafkaオフセットコミット
+      return { success: true, eventId: payload.eventId };
     } catch (error) {
       this.logger.error('Failed to persist event to Kurrent DB', {
         topic,
         partition,
         error: error instanceof Error ? error.message : String(error),
       });
+
+      // エラー時は例外をスロー → NACK → 再処理
       throw error;
     }
   }

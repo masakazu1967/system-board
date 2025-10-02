@@ -1,4 +1,4 @@
-import { PrimitiveValueObject } from 'shared';
+import { PrimitiveValueObject } from '@system-board/shared';
 import { z } from 'zod';
 
 /**

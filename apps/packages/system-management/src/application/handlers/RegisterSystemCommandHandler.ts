@@ -1,16 +1,13 @@
 import { Injectable, Logger } from '@nestjs/common';
-import type { EventPublisher } from 'shared';
+import type { EventPublisher } from '@system-board/shared';
 import { RegisterSystemCommand } from '../commands/RegisterSystemCommand';
 import { System } from '../../domain/aggregates/System';
 import { SystemName } from '../../domain/value-objects/SystemName';
-import { SystemType, SystemTypeHelper } from '../../domain/value-objects/SystemType';
+import { SystemTypeHelper } from '../../domain/value-objects/SystemType';
 import { HostConfiguration } from '../../domain/value-objects/HostConfiguration';
 import { SystemPackages } from '../../domain/value-objects/SystemPackages';
 import { Package } from '../../domain/value-objects/Package';
-import {
-  SecurityClassification,
-  SecurityClassificationHelper,
-} from '../../domain/value-objects/SecurityClassification';
+import { SecurityClassificationHelper } from '../../domain/value-objects/SecurityClassification';
 import { CriticalityLevel } from '../../domain/value-objects/CriticalityLevel';
 import { SystemId } from '../../domain/value-objects/SystemId';
 
@@ -46,10 +43,10 @@ export class RegisterSystemCommandHandler {
     const packages = SystemPackages.fromArray(
       command.packages.map((p) =>
         Package.create({
-          name: p.name,
-          version: p.version,
-          dependencies: p.dependencies,
-          vulnerabilities: p.vulnerabilities,
+          name: p.getName(),
+          version: p.getVersion(),
+          dependencies: p.getDependencies(),
+          vulnerabilities: p.getVulnerabilities(),
         }),
       ),
     );
@@ -71,9 +68,6 @@ export class RegisterSystemCommandHandler {
 
     // イベントをコミット済みとしてマーク
     system.markEventsAsCommitted();
-
-    // TODO: リポジトリに保存（現時点ではスキップ）
-    // await this.systemRepository.save(system);
 
     this.logger.log('System registered successfully', {
       systemId: system.getIdValue(),

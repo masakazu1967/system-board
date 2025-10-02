@@ -1,4 +1,4 @@
-import { ValueObject } from 'shared';
+import { ValueObject } from '@system-board/shared';
 import { z } from 'zod';
 
 /**

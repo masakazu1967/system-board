@@ -1,4 +1,4 @@
-import { AggregateRoot, DomainEvent } from 'shared';
+import { AggregateRoot, DomainEvent } from '@system-board/shared';
 import { SystemId } from '../value-objects/SystemId';
 import { SystemName } from '../value-objects/SystemName';
 import { SystemType } from '../value-objects/SystemType';

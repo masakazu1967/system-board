@@ -1,7 +1,8 @@
-import { Injectable, Logger } from '@nestjs/common';
+import { Inject, Injectable, Logger } from '@nestjs/common';
 import { SystemRepository } from '../../domain/repositories/SystemRepository';
 import { System } from '../../domain/aggregates/System';
 import { SystemId } from '../../domain/value-objects/SystemId';
+import type { KurrentDBClient } from '@system-board/shared';
 
 /**
  * Event Sourcing System Repository
@@ -12,19 +13,17 @@ export class EventSourcingSystemRepository implements SystemRepository {
   private readonly logger = new Logger(EventSourcingSystemRepository.name);
 
   constructor(
-    // TODO: KurrentDBClient をDI
-    // private readonly kurrentClient: KurrentDBClient,
+    @Inject('KurrentDBClient')
+    private readonly kurrentClient: KurrentDBClient,
   ) {}
 
   async save(system: System): Promise<void> {
     const streamName = system.getId().toStreamName();
     const events = system.getUncommittedEvents();
 
-    // TODO: Kurrent DB への永続化実装
-    /*
     await this.kurrentClient.appendToStream(
       streamName,
-      events.map(event => ({
+      events.map((event) => ({
         eventId: event.eventId,
         eventType: event.eventType,
         data: event.getData(),
@@ -38,7 +37,6 @@ export class EventSourcingSystemRepository implements SystemRepository {
         expectedRevision: system.getVersion() - events.length - 1,
       }
     );
-    */
 
     system.markEventsAsCommitted();
 
@@ -52,8 +50,6 @@ export class EventSourcingSystemRepository implements SystemRepository {
   async findById(systemId: SystemId): Promise<System | null> {
     const streamName = systemId.toStreamName();
 
-    // TODO: Kurrent DB からイベントを読み取り
-    /*
     const events = await this.kurrentClient.readStream(streamName);
 
     if (!events || events.length === 0) {
@@ -63,15 +59,12 @@ export class EventSourcingSystemRepository implements SystemRepository {
     // イベントから集約を再構築
     const system = new System(systemId);
     system.loadFromHistory(events);
-    return system;
-    */
 
     this.logger.debug('System loaded from event store', {
       systemId: systemId.getValue(),
       streamName,
     });
-
-    return null; // モック実装
+    return system;
   }
 
   async findByName(name: string): Promise<System | null> {

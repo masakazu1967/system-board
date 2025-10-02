@@ -1,4 +1,4 @@
-import { ValueObject } from 'shared';
+import { ValueObject } from '@system-board/shared';
 import { Package } from './Package';
 
 /**
@@ -31,9 +31,7 @@ export class SystemPackages extends ValueObject<SystemPackagesProps> {
       p.hasCriticalVulnerabilities(),
     );
     if (hasCriticalVulnerabilities) {
-      throw new Error(
-        'Packages with critical vulnerabilities cannot be added',
-      );
+      throw new Error('Packages with critical vulnerabilities cannot be added');
     }
   }
 
@@ -99,9 +97,7 @@ export class SystemPackages extends ValueObject<SystemPackagesProps> {
    * パッケージ存在確認
    */
   public contains(pkg: Package): boolean {
-    return this.props.packages.some(
-      (p) => p.getName() === pkg.getName(),
-    );
+    return this.props.packages.some((p) => p.getName() === pkg.getName());
   }
 
   /**

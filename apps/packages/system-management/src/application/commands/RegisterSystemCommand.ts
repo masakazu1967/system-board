@@ -14,16 +14,7 @@ export class RegisterSystemCommand {
       storage: number;
       encryptionEnabled: boolean;
     },
-    public readonly packages: Array<{
-      name: string;
-      version: string;
-      dependencies: string[];
-      vulnerabilities: Array<{
-        cveId: string;
-        severity: string;
-        cvssScore: number;
-      }>;
-    }>,
+    public readonly packages: Array<Package>,
     public readonly securityClassification: string,
     public readonly criticality: number,
     public readonly correlationId: string,

@@ -1,5 +1,14 @@
 import { randomUUID } from 'crypto';
-import { AggregateId } from 'shared';
+import { AggregateId } from '@system-board/shared';
+import { z } from 'zod';
+
+/**
+ * System ID Zod Schema
+ * UUID v4形式のバリデーション
+ */
+const SystemIdSchema = z.uuid({
+  message: 'Invalid SystemId: must be a valid UUID',
+});
 
 /**
  * System ID Value Object
@@ -36,22 +45,14 @@ export class SystemId extends AggregateId {
    * バリデーション
    */
   public static validate(value: string): void {
-    if (!SystemId.isValid(value)) {
-      throw new Error(`Invalid SystemId: ${value}`);
-    }
+    SystemIdSchema.parse(value);
   }
 
   /**
    * 有効性チェック
    */
   public static isValid(value: string): boolean {
-    if (!value || typeof value !== 'string') {
-      return false;
-    }
-    // UUID形式チェック
-    const uuidRegex =
-      /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
-    return uuidRegex.test(value);
+    return SystemIdSchema.safeParse(value).success;
   }
 
   public toString(): string {
