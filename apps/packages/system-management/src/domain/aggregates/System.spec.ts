@@ -4,10 +4,7 @@ import { SystemType, SystemTypeHelper } from '../value-objects/SystemType';
 import { HostConfiguration } from '../value-objects/HostConfiguration';
 import { SystemPackages } from '../value-objects/SystemPackages';
 import { Package } from '../value-objects/Package';
-import {
-  SecurityClassification,
-  SecurityClassificationHelper,
-} from '../value-objects/SecurityClassification';
+import { SecurityClassificationHelper } from '../value-objects/SecurityClassification';
 import { CriticalityLevel } from '../value-objects/CriticalityLevel';
 import { SystemRegistered } from '../events/SystemRegistered';
 
@@ -145,6 +142,7 @@ describe('System Aggregate', () => {
       expect(reconstructedSystem.getType()).toBe(SystemType.WEB);
       expect(reconstructedSystem.getCriticality().getValue()).toBe(2);
       expect(reconstructedSystem.hasEncryptionEnabled()).toBe(false);
+
       expect(reconstructedSystem.getPackages().size()).toBe(1);
     });
 
