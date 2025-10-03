@@ -2,7 +2,10 @@
   "name": "@system-board/shared",
   "version": "0.0.1",
   "description": "",
-  "author": "",
+  "author": {
+    "name": "masakazu kobayashi",
+    "email": "masakazu1967@yggdrasilroot.info"
+  },
   "main": "dist/index.js",
   "types": "dist/index.d.ts",
   "private": true,

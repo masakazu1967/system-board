@@ -1,20 +1,11 @@
-/**
- * Kurrent Event
- * EventStoreに格納するイベントの型
- */
-export interface KurrentEvent {
-  eventId: string;
-  eventType: string;
-  data: unknown;
-  metadata?: Record<string, unknown>;
-}
+import { DomainEvent } from '../../domain/base/DomainEvent';
 
 /**
  * Append Options
  * ストリーム追加時のオプション
  */
 export interface KurrentAppendOptions {
-  expectedRevision?: string;
+  expectedRevision?: number;
 }
 
 /**
@@ -24,7 +15,9 @@ export interface KurrentAppendOptions {
 export interface KurrentDBClient {
   appendToStream(
     streamName: string,
-    events: KurrentEvent[],
+    events: DomainEvent[],
     options?: KurrentAppendOptions,
   ): Promise<void>;
+
+  readStream(streamName: string): Promise<DomainEvent[]>;
 }

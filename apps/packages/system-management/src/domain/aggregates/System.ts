@@ -35,6 +35,15 @@ export class System extends AggregateRoot<SystemId> {
   }
 
   /**
+   * イベント履歴からシステムを再構築（ファクトリーメソッド）
+   */
+  public static reconstruct(systemId: SystemId, events: DomainEvent[]): System {
+    const system = new System(systemId);
+    system.loadFromHistory(events);
+    return system;
+  }
+
+  /**
    * システム新規登録（ファクトリーメソッド）
    */
   public static register(

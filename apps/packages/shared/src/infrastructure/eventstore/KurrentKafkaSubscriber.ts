@@ -5,8 +5,6 @@ import {
   Ctx,
   KafkaContext,
 } from '@nestjs/microservices';
-import { EventSubscriber } from '../../application/interfaces/EventSubscriber';
-import { EventHandler } from '../../application/interfaces/EventHandler';
 import { DomainEvent } from '../../domain/base/DomainEvent';
 import type { KurrentDBClient } from './KurrentDBClient';
 import { KAFKA_TOPICS } from '../kafka/kafka-topics.constants';
@@ -19,19 +17,13 @@ import { KAFKA_TOPICS } from '../kafka/kafka-topics.constants';
  */
 @Controller()
 @Injectable()
-export class KurrentKafkaSubscriber implements EventSubscriber {
+export class KurrentKafkaSubscriber {
   private readonly logger = new Logger(KurrentKafkaSubscriber.name);
-  private readonly eventHandlers: Map<string, EventHandler> = new Map();
 
   constructor(
     @Inject('KurrentDBClient')
     private readonly kurrentClient: KurrentDBClient,
   ) {}
-
-  subscribe(eventType: string, handler: EventHandler): void {
-    this.eventHandlers.set(eventType, handler);
-    this.logger.debug(`Event handler registered for ${eventType}`);
-  }
 
   /**
    * システムイベントの受信（NestJS @MessagePattern デコレータ使用）
@@ -146,19 +138,8 @@ export class KurrentKafkaSubscriber implements EventSubscriber {
       eventData.aggregateId,
     );
 
-    const eventToStore = {
-      eventId: eventData.eventId,
-      eventType: eventType,
-      data: eventData.getData(),
-      metadata: {
-        correlationId: eventData.correlationId,
-        causationId: eventData.causationId,
-        occurredOn: eventData.occurredOn,
-      },
-    };
-
-    await this.kurrentClient.appendToStream(streamName, [eventToStore], {
-      expectedRevision: 'any',
+    await this.kurrentClient.appendToStream(streamName, [eventData], {
+      expectedRevision: eventData.aggregateVersion,
     });
 
     this.logger.debug('Event stored in Kurrent DB', {

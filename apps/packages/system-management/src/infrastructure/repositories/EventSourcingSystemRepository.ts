@@ -21,22 +21,9 @@ export class EventSourcingSystemRepository implements SystemRepository {
     const streamName = system.getId().toStreamName();
     const events = system.getUncommittedEvents();
 
-    await this.kurrentClient.appendToStream(
-      streamName,
-      events.map((event) => ({
-        eventId: event.eventId,
-        eventType: event.eventType,
-        data: event.getData(),
-        metadata: {
-          correlationId: event.correlationId,
-          causationId: event.causationId,
-          occurredOn: event.occurredOn,
-        },
-      })),
-      {
-        expectedRevision: system.getVersion() - events.length - 1,
-      }
-    );
+    await this.kurrentClient.appendToStream(streamName, events, {
+      expectedRevision: system.getVersion() - events.length - 1,
+    });
 
     system.markEventsAsCommitted();
 
@@ -50,15 +37,14 @@ export class EventSourcingSystemRepository implements SystemRepository {
   async findById(systemId: SystemId): Promise<System | null> {
     const streamName = systemId.toStreamName();
 
-    const events = await this.kurrentClient.readStream(streamName);
+    const domainEvents = await this.kurrentClient.readStream(streamName);
 
-    if (!events || events.length === 0) {
+    if (!domainEvents || domainEvents.length === 0) {
       return null;
     }
 
     // イベントから集約を再構築
-    const system = new System(systemId);
-    system.loadFromHistory(events);
+    const system = System.reconstruct(systemId, domainEvents);
 
     this.logger.debug('System loaded from event store', {
       systemId: systemId.getValue(),
@@ -71,6 +57,6 @@ export class EventSourcingSystemRepository implements SystemRepository {
     // TODO: Read Model（PostgreSQL）から検索
     // Event Sourcing では、検索クエリはRead Modelを使用
     this.logger.debug('System search by name', { name });
-    return null; // モック実装
+    return Promise.resolve(null); // モック実装
   }
 }
