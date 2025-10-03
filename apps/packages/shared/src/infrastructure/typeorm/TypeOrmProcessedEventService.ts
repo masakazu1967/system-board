@@ -1,8 +1,10 @@
-import { Injectable, Logger } from '@nestjs/common';
+import { Injectable, Logger, Inject } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
 import { Repository } from 'typeorm';
 import { ProcessedEventService } from '../../application/interfaces/ProcessedEventService';
 import { ProcessedEvent } from './entities/ProcessedEvent.entity';
+import type { TypeOrmErrorHandler } from './utils/TypeOrmErrorHandler';
+import { TYPEORM_ERROR_HANDLER } from './utils/TypeormErrorHandlerProvider';
 
 /**
  * TypeOrm Processed Event Service
@@ -15,6 +17,8 @@ export class TypeOrmProcessedEventService implements ProcessedEventService {
   constructor(
     @InjectRepository(ProcessedEvent)
     private readonly processedEventRepository: Repository<ProcessedEvent>,
+    @Inject(TYPEORM_ERROR_HANDLER)
+    private readonly errorHandler: TypeOrmErrorHandler,
   ) {}
 
   async isProcessed(eventId: string): Promise<boolean> {
@@ -44,20 +48,8 @@ export class TypeOrmProcessedEventService implements ProcessedEventService {
         processedAt,
       });
     } catch (error: unknown) {
-      // ON CONFLICT DO NOTHING の動作: 重複キーエラーは無視
-      if (
-        error &&
-        typeof error === 'object' &&
-        'code' in error &&
-        error.code === '23505'
-      ) {
-        // PostgreSQL unique violation error code
-        this.logger.debug(
-          `Event ${eventId} already processed, skipping insert`,
-        );
-        return;
-      }
-      throw error;
+      // ON CONFLICT DO NOTHING の動作: UNIQUE制約エラーは無視（冪等性保証）
+      this.errorHandler.handleUniqueConstraintError(error, eventId, true);
     }
   }
 }

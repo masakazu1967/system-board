@@ -12,9 +12,9 @@ export class ProcessedEvent {
   @Column({ type: 'varchar', length: 255 })
   eventType: string;
 
-  @Column({ type: 'timestamp' })
+  @Column({ type: 'datetime' })
   processedAt: Date;
 
-  @CreateDateColumn({ type: 'timestamp' })
+  @CreateDateColumn({ type: 'datetime' })
   createdAt: Date;
 }

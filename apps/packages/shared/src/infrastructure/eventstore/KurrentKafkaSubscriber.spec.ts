@@ -4,6 +4,7 @@ import { KurrentKafkaSubscriber } from './KurrentKafkaSubscriber';
 import { KurrentDBClient } from './KurrentDBClient';
 import { DomainEvent } from '../../domain/base/DomainEvent';
 import { KafkaContext } from '@nestjs/microservices';
+import { KURRENT_DB_CLIENT } from './kurrent-client.provider';
 
 // テスト用のDomainEvent実装
 class TestEvent extends DomainEvent {
@@ -39,7 +40,7 @@ describe('KurrentKafkaSubscriber', () => {
       controllers: [KurrentKafkaSubscriber],
       providers: [
         {
-          provide: 'KurrentDBClient',
+          provide: KURRENT_DB_CLIENT,
           useValue: kurrentClient,
         },
       ],

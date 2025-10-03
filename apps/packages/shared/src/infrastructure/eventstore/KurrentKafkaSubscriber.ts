@@ -8,6 +8,7 @@ import {
 import { DomainEvent } from '../../domain/base/DomainEvent';
 import type { KurrentDBClient } from './KurrentDBClient';
 import { KAFKA_TOPICS } from '../kafka/kafka-topics.constants';
+import { KURRENT_DB_CLIENT } from './kurrent-client.provider';
 
 /**
  * Kurrent Kafka Subscriber
@@ -21,7 +22,7 @@ export class KurrentKafkaSubscriber {
   private readonly logger = new Logger(KurrentKafkaSubscriber.name);
 
   constructor(
-    @Inject('KurrentDBClient')
+    @Inject(KURRENT_DB_CLIENT)
     private readonly kurrentClient: KurrentDBClient,
   ) {}
 
