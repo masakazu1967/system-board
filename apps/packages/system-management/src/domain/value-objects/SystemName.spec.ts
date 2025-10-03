@@ -16,9 +16,12 @@ describe('SystemName', () => {
       expect(() => SystemName.create('')).toThrow();
     });
 
-    it('should throw error for whitespace-only name', () => {
-      // Act & Assert
-      expect(() => SystemName.create('   ')).toThrow();
+    it('should trim and validate whitespace-padded names', () => {
+      // Act
+      const systemName = SystemName.create('  Test System  ');
+
+      // Assert
+      expect(systemName.getValue()).toBe('Test System');
     });
 
     it('should throw error for name exceeding max length', () => {

@@ -40,13 +40,16 @@ describe('Package', () => {
         name: 'vulnerable-package',
         version: '1.0.0',
         dependencies: [],
-        vulnerabilities: ['CVE-2024-0001', 'CVE-2024-0002'],
+        vulnerabilities: [
+          { cveId: 'CVE-2024-0001', severity: 'HIGH', cvssScore: 8.5 },
+          { cveId: 'CVE-2024-0002', severity: 'MEDIUM', cvssScore: 6.0 },
+        ],
       });
 
       // Assert
       expect(pkg.getVulnerabilities()).toHaveLength(2);
-      expect(pkg.getVulnerabilities()).toContain('CVE-2024-0001');
-      expect(pkg.getVulnerabilities()).toContain('CVE-2024-0002');
+      expect(pkg.getVulnerabilities()[0].cveId).toBe('CVE-2024-0001');
+      expect(pkg.getVulnerabilities()[1].cveId).toBe('CVE-2024-0002');
     });
 
     it('should throw error for empty package name', () => {
@@ -74,18 +77,20 @@ describe('Package', () => {
     });
   });
 
-  describe('hasVulnerabilities', () => {
+  describe('hasKnownVulnerabilities', () => {
     it('should return true when package has vulnerabilities', () => {
       // Arrange
       const pkg = Package.create({
         name: 'vulnerable-package',
         version: '1.0.0',
         dependencies: [],
-        vulnerabilities: ['CVE-2024-0001'],
+        vulnerabilities: [
+          { cveId: 'CVE-2024-0001', severity: 'HIGH', cvssScore: 8.5 },
+        ],
       });
 
       // Act & Assert
-      expect(pkg.hasVulnerabilities()).toBe(true);
+      expect(pkg.hasKnownVulnerabilities()).toBe(true);
     });
 
     it('should return false when package has no vulnerabilities', () => {
@@ -98,7 +103,7 @@ describe('Package', () => {
       });
 
       // Act & Assert
-      expect(pkg.hasVulnerabilities()).toBe(false);
+      expect(pkg.hasKnownVulnerabilities()).toBe(false);
     });
   });
 
@@ -122,7 +127,9 @@ describe('Package', () => {
         name: 'non-compliant-package',
         version: '1.0.0',
         dependencies: [],
-        vulnerabilities: ['CVE-2024-0001'],
+        vulnerabilities: [
+          { cveId: 'CVE-2024-0001', severity: 'HIGH', cvssScore: 8.5 },
+        ],
       });
 
       // Act & Assert

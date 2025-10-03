@@ -138,13 +138,11 @@ describe('System Aggregate', () => {
       const reconstructedSystem = System.reconstruct(systemId, events);
 
       // Assert
-      expect(reconstructedSystem.getId().getValue()).toBe(
-        systemId.getValue(),
-      );
+      expect(reconstructedSystem.getId().getValue()).toBe(systemId.getValue());
       expect(reconstructedSystem.getName().getValue()).toBe(
         'Reconstructed System',
       );
-      expect(reconstructedSystem.getType()).toBe(SystemType.WEB_SERVER);
+      expect(reconstructedSystem.getType()).toBe(SystemType.WEB);
       expect(reconstructedSystem.getCriticality().getValue()).toBe(2);
       expect(reconstructedSystem.hasEncryptionEnabled()).toBe(false);
       expect(reconstructedSystem.getPackages().size()).toBe(1);

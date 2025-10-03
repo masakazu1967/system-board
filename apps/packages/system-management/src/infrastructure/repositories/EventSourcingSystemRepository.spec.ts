@@ -42,11 +42,9 @@ describe('EventSourcingSystemRepository', () => {
         SystemName.create('Test System'),
         SystemTypeHelper.fromString('web-server'),
         HostConfiguration.create({
-          hostId: 'host-001',
-          ipAddress: '192.168.1.100',
-          hostname: 'web-server-01',
-          osType: 'Linux',
-          osVersion: 'Ubuntu 22.04',
+          cpu: 4,
+          memory: 16,
+          storage: 500,
           encryptionEnabled: true,
         }),
         SystemPackages.fromArray([
@@ -85,11 +83,9 @@ describe('EventSourcingSystemRepository', () => {
         SystemName.create('Test System'),
         SystemTypeHelper.fromString('database'),
         HostConfiguration.create({
-          hostId: 'host-002',
-          ipAddress: '192.168.1.101',
-          hostname: 'db-server-01',
-          osType: 'Linux',
-          osVersion: 'RHEL 8',
+          cpu: 8,
+          memory: 32,
+          storage: 1000,
           encryptionEnabled: true,
         }),
         SystemPackages.fromArray([]),
@@ -111,13 +107,11 @@ describe('EventSourcingSystemRepository', () => {
       // Arrange
       const system = System.register(
         SystemName.create('Stream Name Test'),
-        SystemTypeHelper.fromString('application'),
+        SystemTypeHelper.fromString('web-server'),
         HostConfiguration.create({
-          hostId: 'host-003',
-          ipAddress: '192.168.1.102',
-          hostname: 'app-server-01',
-          osType: 'Windows',
-          osVersion: 'Windows Server 2022',
+          cpu: 2,
+          memory: 8,
+          storage: 250,
           encryptionEnabled: false,
         }),
         SystemPackages.fromArray([]),
@@ -144,11 +138,9 @@ describe('EventSourcingSystemRepository', () => {
       const name = SystemName.create('Reconstructed System');
       const type = SystemTypeHelper.fromString('middleware');
       const host = HostConfiguration.create({
-        hostId: 'host-004',
-        ipAddress: '192.168.1.103',
-        hostname: 'middleware-01',
-        osType: 'Linux',
-        osVersion: 'CentOS 7',
+        cpu: 4,
+        memory: 16,
+        storage: 500,
         encryptionEnabled: true,
       });
       const packages = SystemPackages.fromArray([]);
@@ -221,11 +213,9 @@ describe('EventSourcingSystemRepository', () => {
         SystemName.create('Full Property System'),
         SystemTypeHelper.fromString('web-server'),
         HostConfiguration.create({
-          hostId: 'host-005',
-          ipAddress: '192.168.1.104',
-          hostname: 'web-server-02',
-          osType: 'Linux',
-          osVersion: 'Ubuntu 22.04',
+          cpu: 16,
+          memory: 64,
+          storage: 2000,
           encryptionEnabled: true,
         }),
         CriticalityLevel.create(5),
@@ -245,7 +235,7 @@ describe('EventSourcingSystemRepository', () => {
       expect(system!.getName().getValue()).toBe('Full Property System');
       expect(system!.getCriticality().getValue()).toBe(5);
       expect(system!.hasEncryptionEnabled()).toBe(true);
-      expect(system!.getPackages().getPackages()).toHaveLength(1);
+      expect(system!.getPackages().size()).toBe(1);
       expect(system!.isActive()).toBe(true);
     });
   });
