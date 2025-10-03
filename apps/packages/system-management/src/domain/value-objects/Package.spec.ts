@@ -107,8 +107,8 @@ describe('Package', () => {
     });
   });
 
-  describe('isSecurityCompliant', () => {
-    it('should return true for packages without vulnerabilities', () => {
+  describe('hasSecurityCompliance', () => {
+    it('should return true for packages without critical vulnerabilities', () => {
       // Arrange
       const pkg = Package.create({
         name: 'compliant-package',
@@ -118,22 +118,22 @@ describe('Package', () => {
       });
 
       // Act & Assert
-      expect(pkg.isSecurityCompliant()).toBe(true);
+      expect(pkg.hasSecurityCompliance()).toBe(true);
     });
 
-    it('should return false for packages with vulnerabilities', () => {
+    it('should return false for packages with critical vulnerabilities', () => {
       // Arrange
       const pkg = Package.create({
         name: 'non-compliant-package',
         version: '1.0.0',
         dependencies: [],
         vulnerabilities: [
-          { cveId: 'CVE-2024-0001', severity: 'HIGH', cvssScore: 8.5 },
+          { cveId: 'CVE-2024-0001', severity: 'CRITICAL', cvssScore: 9.5 },
         ],
       });
 
       // Act & Assert
-      expect(pkg.isSecurityCompliant()).toBe(false);
+      expect(pkg.hasSecurityCompliance()).toBe(false);
     });
   });
 

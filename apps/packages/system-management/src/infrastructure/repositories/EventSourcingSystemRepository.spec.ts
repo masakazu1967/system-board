@@ -40,7 +40,7 @@ describe('EventSourcingSystemRepository', () => {
       // Arrange
       const system = System.register(
         SystemName.create('Test System'),
-        SystemTypeHelper.fromString('web-server'),
+        SystemTypeHelper.fromString('web'),
         HostConfiguration.create({
           cpu: 4,
           memory: 16,
@@ -107,7 +107,7 @@ describe('EventSourcingSystemRepository', () => {
       // Arrange
       const system = System.register(
         SystemName.create('Stream Name Test'),
-        SystemTypeHelper.fromString('web-server'),
+        SystemTypeHelper.fromString('web'),
         HostConfiguration.create({
           cpu: 2,
           memory: 8,
@@ -211,7 +211,7 @@ describe('EventSourcingSystemRepository', () => {
       const event = new SystemRegistered(
         systemId,
         SystemName.create('Full Property System'),
-        SystemTypeHelper.fromString('web-server'),
+        SystemTypeHelper.fromString('web'),
         HostConfiguration.create({
           cpu: 16,
           memory: 64,
@@ -235,7 +235,7 @@ describe('EventSourcingSystemRepository', () => {
       expect(system!.getName().getValue()).toBe('Full Property System');
       expect(system!.getCriticality().getValue()).toBe(5);
       expect(system!.hasEncryptionEnabled()).toBe(true);
-      expect(system!.getPackages().size()).toBe(1);
+      expect(system!.getPackages().count()).toBe(1);
       expect(system!.isActive()).toBe(true);
     });
   });

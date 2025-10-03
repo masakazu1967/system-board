@@ -47,13 +47,13 @@ describe('CriticalityLevel', () => {
     });
   });
 
-  describe('isHigh', () => {
+  describe('isHighCriticality', () => {
     it('should return true for criticality level 4', () => {
       // Arrange
       const criticality = CriticalityLevel.create(4);
 
       // Act & Assert
-      expect(criticality.isHigh()).toBe(true);
+      expect(criticality.isHighCriticality()).toBe(true);
     });
 
     it('should return true for criticality level 5', () => {
@@ -61,7 +61,7 @@ describe('CriticalityLevel', () => {
       const criticality = CriticalityLevel.create(5);
 
       // Act & Assert
-      expect(criticality.isHigh()).toBe(true);
+      expect(criticality.isHighCriticality()).toBe(true);
     });
 
     it('should return false for criticality level 3', () => {
@@ -69,7 +69,7 @@ describe('CriticalityLevel', () => {
       const criticality = CriticalityLevel.create(3);
 
       // Act & Assert
-      expect(criticality.isHigh()).toBe(false);
+      expect(criticality.isHighCriticality()).toBe(false);
     });
 
     it('should return false for criticality level 1', () => {
@@ -77,7 +77,7 @@ describe('CriticalityLevel', () => {
       const criticality = CriticalityLevel.create(1);
 
       // Act & Assert
-      expect(criticality.isHigh()).toBe(false);
+      expect(criticality.isHighCriticality()).toBe(false);
     });
   });
 

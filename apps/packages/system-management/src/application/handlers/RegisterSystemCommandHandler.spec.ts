@@ -15,10 +15,9 @@ describe('RegisterSystemCommandHandler', () => {
 
     const module: TestingModule = await Test.createTestingModule({
       providers: [
-        RegisterSystemCommandHandler,
         {
-          provide: 'EventPublisher',
-          useValue: eventPublisher,
+          provide: RegisterSystemCommandHandler,
+          useFactory: () => new RegisterSystemCommandHandler(eventPublisher),
         },
       ],
     }).compile();
@@ -40,13 +39,11 @@ describe('RegisterSystemCommandHandler', () => {
 
       const command = new RegisterSystemCommand(
         'Test System',
-        'web-server',
+        'web',
         {
-          hostId: 'host-001',
-          ipAddress: '192.168.1.100',
-          hostname: 'web-server-01',
-          osType: 'Linux',
-          osVersion: 'Ubuntu 22.04',
+          cpu: 4,
+          memory: 16,
+          storage: 500,
           encryptionEnabled: true,
         },
         [testPackage],
@@ -93,13 +90,11 @@ describe('RegisterSystemCommandHandler', () => {
 
       const command = new RegisterSystemCommand(
         'Multi Package System',
-        'application',
+        'api',
         {
-          hostId: 'host-002',
-          ipAddress: '192.168.1.101',
-          hostname: 'app-server-01',
-          osType: 'Windows',
-          osVersion: 'Windows Server 2022',
+          cpu: 8,
+          memory: 32,
+          storage: 1000,
           encryptionEnabled: false,
         },
         packages,
@@ -117,7 +112,7 @@ describe('RegisterSystemCommandHandler', () => {
 
       const publishedEvents = eventPublisher.publishAll.mock.calls[0][0];
       const event = publishedEvents[0] as SystemRegistered;
-      expect(event.packages.getPackages()).toHaveLength(2);
+      expect(event.packages.getAll()).toHaveLength(2);
     });
 
     it('should handle high criticality systems', async () => {
@@ -133,11 +128,9 @@ describe('RegisterSystemCommandHandler', () => {
         'Critical System',
         'database',
         {
-          hostId: 'host-003',
-          ipAddress: '192.168.1.102',
-          hostname: 'db-server-01',
-          osType: 'Linux',
-          osVersion: 'RHEL 8',
+          cpu: 16,
+          memory: 64,
+          storage: 2000,
           encryptionEnabled: true,
         },
         [testPackage],
@@ -167,13 +160,11 @@ describe('RegisterSystemCommandHandler', () => {
 
       const command1 = new RegisterSystemCommand(
         'System 1',
-        'web-server',
+        'web',
         {
-          hostId: 'host-001',
-          ipAddress: '192.168.1.100',
-          hostname: 'web-01',
-          osType: 'Linux',
-          osVersion: 'Ubuntu 22.04',
+          cpu: 4,
+          memory: 16,
+          storage: 500,
           encryptionEnabled: true,
         },
         [testPackage],
@@ -184,13 +175,11 @@ describe('RegisterSystemCommandHandler', () => {
 
       const command2 = new RegisterSystemCommand(
         'System 2',
-        'web-server',
+        'web',
         {
-          hostId: 'host-002',
-          ipAddress: '192.168.1.101',
-          hostname: 'web-02',
-          osType: 'Linux',
-          osVersion: 'Ubuntu 22.04',
+          cpu: 4,
+          memory: 16,
+          storage: 500,
           encryptionEnabled: true,
         },
         [testPackage],

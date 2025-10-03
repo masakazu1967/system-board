@@ -13,7 +13,7 @@ describe('System Aggregate', () => {
     it('should create a new system and emit SystemRegistered event', () => {
       // Arrange
       const name = SystemName.create('Test System');
-      const type = SystemTypeHelper.fromString('web-server');
+      const type = SystemTypeHelper.fromString('web');
       const host = HostConfiguration.create({
         cpu: 4,
         memory: 16,
@@ -98,7 +98,7 @@ describe('System Aggregate', () => {
     it('should reconstruct system from event history', () => {
       // Arrange
       const name = SystemName.create('Reconstructed System');
-      const type = SystemTypeHelper.fromString('web-server');
+      const type = SystemTypeHelper.fromString('web');
       const host = HostConfiguration.create({
         cpu: 2,
         memory: 8,
@@ -143,13 +143,13 @@ describe('System Aggregate', () => {
       expect(reconstructedSystem.getCriticality().getValue()).toBe(2);
       expect(reconstructedSystem.hasEncryptionEnabled()).toBe(false);
 
-      expect(reconstructedSystem.getPackages().size()).toBe(1);
+      expect(reconstructedSystem.getPackages().count()).toBe(1);
     });
 
     it('should have no uncommitted events after reconstruction', () => {
       // Arrange
       const name = SystemName.create('Test System');
-      const type = SystemTypeHelper.fromString('web-server');
+      const type = SystemTypeHelper.fromString('web');
       const host = HostConfiguration.create({
         cpu: 4,
         memory: 16,
@@ -215,7 +215,7 @@ describe('System Aggregate', () => {
 
       const system = System.register(
         SystemName.create('Secure System'),
-        SystemTypeHelper.fromString('web-server'),
+        SystemTypeHelper.fromString('web'),
         HostConfiguration.create({
           cpu: 4,
           memory: 16,
