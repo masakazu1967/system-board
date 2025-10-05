@@ -5,6 +5,8 @@ export * from './kafka/KafkaModule';
 // Event Store Infrastructure
 export * from './eventstore/KurrentKafkaSubscriber';
 export * from './eventstore/KurrentDBClient';
+export * from './eventstore/KurrentModule';
+export * from './eventstore/DomainEventToJsonTypeHelper';
 
 // PostgreSQL Infrastructure
 export * from './typeorm/TypeOrmProcessedEventService';
