@@ -153,7 +153,7 @@ export class KurrentEventStoreAdapter implements EventStore {
 
   private convertExpectedRevision(
     revision?: number | 'any' | 'no_stream' | 'stream_exists',
-  ): any {
+  ): 'any' | 'no_stream' | 'stream_exists' | bigint {
     if (revision === undefined || revision === 'any') {
       return 'any';
     }
@@ -178,9 +178,11 @@ export class KurrentEventStoreAdapter implements EventStore {
     return BigInt(revision);
   }
 
-  private isStreamNotFound(error: any): boolean {
-    return (
-      error?.code === 'STREAM_NOT_FOUND' || error?.type === 'stream-not-found'
-    );
+  private isStreamNotFound(error: unknown): boolean {
+    if (typeof error !== 'object' || error === null) {
+      return false;
+    }
+    const err = error as { code?: string; type?: string };
+    return err.code === 'STREAM_NOT_FOUND' || err.type === 'stream-not-found';
   }
 }

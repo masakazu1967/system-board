@@ -10,22 +10,23 @@ import { SystemPackages } from '../../domain/value-objects/SystemPackages';
 import { Package } from '../../domain/value-objects/Package';
 import { SecurityClassificationHelper } from '../../domain/value-objects/SecurityClassification';
 import { CriticalityLevel } from '../../domain/value-objects/CriticalityLevel';
-import { KurrentDBClient } from '@system-board/shared';
+import { EVENT_STORE } from '@system-board/shared';
+import type { EventStore } from '@system-board/shared';
 import { SystemRegistered } from '../../domain/events/SystemRegistered';
 
 describe('EventSourcingSystemRepository', () => {
   let repository: EventSourcingSystemRepository;
-  let kurrentClient: MockProxy<KurrentDBClient>;
+  let eventStore: MockProxy<EventStore>;
 
   beforeEach(async () => {
-    kurrentClient = mock<KurrentDBClient>();
+    eventStore = mock<EventStore>();
 
     const module: TestingModule = await Test.createTestingModule({
       providers: [
         EventSourcingSystemRepository,
         {
-          provide: 'KurrentDBClient',
-          useValue: kurrentClient,
+          provide: EVENT_STORE,
+          useValue: eventStore,
         },
       ],
     }).compile();
@@ -60,16 +61,16 @@ describe('EventSourcingSystemRepository', () => {
         'correlation-123',
       );
 
-      kurrentClient.appendToStream.mockResolvedValue(undefined);
+      eventStore.appendToStream.mockResolvedValue(undefined);
 
       // Act
       await repository.save(system);
 
       // Assert
-      expect(kurrentClient.appendToStream).toHaveBeenCalledTimes(1);
+      expect(eventStore.appendToStream).toHaveBeenCalledTimes(1);
 
       const [streamName, events, options] =
-        kurrentClient.appendToStream.mock.calls[0];
+        eventStore.appendToStream.mock.calls[0];
 
       expect(streamName).toBe(`System-${system.getIdValue()}`);
       expect(events).toHaveLength(1);
@@ -94,7 +95,7 @@ describe('EventSourcingSystemRepository', () => {
         'correlation-456',
       );
 
-      kurrentClient.appendToStream.mockResolvedValue(undefined);
+      eventStore.appendToStream.mockResolvedValue(undefined);
 
       // Act
       await repository.save(system);
@@ -120,13 +121,13 @@ describe('EventSourcingSystemRepository', () => {
         'correlation-789',
       );
 
-      kurrentClient.appendToStream.mockResolvedValue(undefined);
+      eventStore.appendToStream.mockResolvedValue(undefined);
 
       // Act
       await repository.save(system);
 
       // Assert
-      const [streamName] = kurrentClient.appendToStream.mock.calls[0];
+      const [streamName] = eventStore.appendToStream.mock.calls[0];
       expect(streamName).toMatch(/^System-[0-9a-f-]{36}$/);
     });
   });
@@ -160,7 +161,7 @@ describe('EventSourcingSystemRepository', () => {
         'correlation-id',
       );
 
-      kurrentClient.readStream.mockResolvedValue([event]);
+      eventStore.readStream.mockResolvedValue([event]);
 
       // Act
       const system = await repository.findById(systemId);
@@ -169,7 +170,7 @@ describe('EventSourcingSystemRepository', () => {
       expect(system).not.toBeNull();
       expect(system!.getId().getValue()).toBe(systemId.getValue());
       expect(system!.getName().getValue()).toBe('Reconstructed System');
-      expect(kurrentClient.readStream).toHaveBeenCalledWith(
+      expect(eventStore.readStream).toHaveBeenCalledWith(
         `System-${systemId.getValue()}`,
       );
     });
@@ -177,7 +178,7 @@ describe('EventSourcingSystemRepository', () => {
     it('should return null when stream does not exist', async () => {
       // Arrange
       const systemId = SystemId.generate();
-      kurrentClient.readStream.mockResolvedValue([]);
+      eventStore.readStream.mockResolvedValue([]);
 
       // Act
       const system = await repository.findById(systemId);
@@ -189,7 +190,7 @@ describe('EventSourcingSystemRepository', () => {
     it('should return null when stream is null', async () => {
       // Arrange
       const systemId = SystemId.generate();
-      kurrentClient.readStream.mockResolvedValue(null as any);
+      eventStore.readStream.mockResolvedValue(null as any);
 
       // Act
       const system = await repository.findById(systemId);
@@ -225,7 +226,7 @@ describe('EventSourcingSystemRepository', () => {
         'correlation-id',
       );
 
-      kurrentClient.readStream.mockResolvedValue([event]);
+      eventStore.readStream.mockResolvedValue([event]);
 
       // Act
       const system = await repository.findById(systemId);
