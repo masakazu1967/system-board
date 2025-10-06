@@ -7,6 +7,7 @@ import { CriticalityLevel } from '../value-objects/CriticalityLevel';
 import { SystemPackages } from '../value-objects/SystemPackages';
 import { SecurityClassification } from '../value-objects/SecurityClassification';
 import { System } from '../aggregates/System';
+import { SystemRegisteredData } from './SystemRegisteredData';
 
 /**
  * SystemRegistered Domain Event
@@ -35,7 +36,7 @@ export class SystemRegistered extends DomainEvent {
     );
   }
 
-  getData() {
+  getData(): SystemRegisteredData {
     return {
       systemId: this.systemId.getValue(),
       name: this.name.getValue(),
