@@ -1,34 +1,34 @@
-import { Controller, Injectable, Logger, Inject } from '@nestjs/common';
+// shared/infrastructure/event-store/controllers/event-store-message-broker.controller.ts
+import { Controller, Injectable, Logger } from '@nestjs/common';
 import {
   MessagePattern,
   Payload,
   Ctx,
   KafkaContext,
 } from '@nestjs/microservices';
-import { DomainEvent } from '../../domain/base/DomainEvent';
-import type { KurrentDBClient } from './KurrentDBClient';
-import { KAFKA_TOPICS } from '../kafka/kafka-topics.constants';
-import { KURRENT_DB_CLIENT } from './kurrent-client.provider';
+import { DomainEvent } from '../domain/base/DomainEvent';
+import { EventPersistenceService } from '../infrastructure/eventstore/EventPersistenceService';
 
-/**
- * Kurrent Kafka Subscriber
- * Kafkaメッセージを受信してKurrent DBに永続化
- * ダブルコミット回避: Kafka → Kurrent DB の非同期永続化
- * NestJS @MessagePattern デコレータ使用（Request-Response）
- */
+// Kafkaトピック定数
+export const KAFKA_TOPICS = {
+  SYSTEM_EVENTS: 'system-events',
+  VULNERABILITY_EVENTS: 'vulnerability-events',
+  TASK_EVENTS: 'task-events',
+  SECURITY_EVENTS: 'security-events',
+  DOMAIN_EVENTS: 'domain-events',
+} as const;
+
 @Controller()
 @Injectable()
-export class KurrentKafkaSubscriber {
-  private readonly logger = new Logger(KurrentKafkaSubscriber.name);
+export class EventStoreMessageBrokerController {
+  private readonly logger = new Logger(EventStoreMessageBrokerController.name);
 
   constructor(
-    @Inject(KURRENT_DB_CLIENT)
-    private readonly kurrentClient: KurrentDBClient,
+    private readonly eventPersistenceService: EventPersistenceService,
   ) {}
 
   /**
-   * システムイベントの受信（NestJS @MessagePattern デコレータ使用）
-   * ACK/NACKによる明示的なオフセットコミット制御
+   * システムイベントの受信
    */
   @MessagePattern(KAFKA_TOPICS.SYSTEM_EVENTS)
   async handleSystemEvents(
@@ -72,20 +72,9 @@ export class KurrentKafkaSubscriber {
   }
 
   /**
-   * 緊急イベントの受信
-   */
-  @MessagePattern('urgent-events')
-  async handleUrgentEvents(
-    @Payload() payload: DomainEvent,
-    @Ctx() context: KafkaContext,
-  ): Promise<{ success: boolean; eventId: string }> {
-    return await this.handleKafkaMessage(payload, context);
-  }
-
-  /**
    * ドメインイベント（汎用）の受信
    */
-  @MessagePattern('domain-events')
+  @MessagePattern(KAFKA_TOPICS.DOMAIN_EVENTS)
   async handleDomainEvents(
     @Payload() payload: DomainEvent,
     @Ctx() context: KafkaContext,
@@ -93,6 +82,9 @@ export class KurrentKafkaSubscriber {
     return await this.handleKafkaMessage(payload, context);
   }
 
+  /**
+   * メッセージ処理の共通ロジック
+   */
   private async handleKafkaMessage(
     payload: DomainEvent,
     context: KafkaContext,
@@ -106,20 +98,20 @@ export class KurrentKafkaSubscriber {
         originalMessage.headers?.['event-type']?.toString() ||
         payload.eventType;
 
-      // Kurrent DBに永続化
-      await this.persistToEventStore(payload, eventType);
+      // EventPersistenceServiceで永続化
+      await this.eventPersistenceService.persistDomainEvent(payload);
 
-      this.logger.debug('Event persisted to Kurrent DB from Kafka', {
+      this.logger.debug('Event persisted from Kafka message', {
         eventType,
         eventId: payload.eventId,
         topic,
         partition,
       });
 
-      // 成功応答（ACK） → Kafkaオフセットコミット
+      // 成功応答（ACK）
       return { success: true, eventId: payload.eventId };
     } catch (error) {
-      this.logger.error('Failed to persist event to Kurrent DB', {
+      this.logger.error('Failed to persist event from Kafka', {
         topic,
         partition,
         error: error instanceof Error ? error.message : String(error),
@@ -128,29 +120,5 @@ export class KurrentKafkaSubscriber {
       // エラー時は例外をスロー → NACK → 再処理
       throw error;
     }
-  }
-
-  private async persistToEventStore(
-    eventData: DomainEvent,
-    eventType: string,
-  ): Promise<void> {
-    const streamName = this.getStreamName(
-      eventData.aggregateType,
-      eventData.aggregateId,
-    );
-
-    await this.kurrentClient.appendToStream(streamName, [eventData], {
-      expectedRevision: eventData.aggregateVersion,
-    });
-
-    this.logger.debug('Event stored in Kurrent DB', {
-      streamName,
-      eventType,
-      eventId: eventData.eventId,
-    });
-  }
-
-  private getStreamName(aggregateType: string, aggregateId: string): string {
-    return `${aggregateType}-${aggregateId}`;
   }
 }

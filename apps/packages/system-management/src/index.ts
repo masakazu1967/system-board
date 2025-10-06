@@ -6,3 +6,5 @@ export * from './application';
 
 // Infrastructure Layer
 export * from './infrastructure';
+
+export { SystemManagementModule } from './SystemManagementModule';

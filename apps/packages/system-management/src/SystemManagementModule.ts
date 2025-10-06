@@ -10,5 +10,9 @@ export class SystemManagementModule implements OnModuleInit {
       SystemRegistered.EVENT_NAME,
       new SystemRegisteredSerializer(),
     );
+
+    console.log(
+      `[SystemModule] Registered serializer for: ${SystemRegistered.EVENT_NAME}`,
+    );
   }
 }
