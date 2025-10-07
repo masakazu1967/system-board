@@ -9,3 +9,6 @@ export * from './infrastructure';
 
 // Shared Module
 export * from './SharedModule';
+
+// Presentation Layer
+export * from './presentation';

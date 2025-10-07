@@ -13,6 +13,7 @@
     "relationship-management": "pnpm --filter '@system-board/relationship-management'",
     "task-management": "pnpm --filter '@system-board/task-management'",
     "system-management-service": "pnpm --filter '@system-board/system-management-service'",
+    "system-management-subscriber": "pnpm --filter '@system-board/system-management-subscriber'",
     "vulnerability-management-service": "pnpm --filter '@system-board/vulnerability-management-service'",
     "relationship-management-service": "pnpm --filter '@system-board/relationship-management-service'",
     "task-management-service": "pnpm --filter '@system-board/task-management-service'"
