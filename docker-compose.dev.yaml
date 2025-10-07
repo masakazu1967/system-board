@@ -9,7 +9,7 @@ services:
     ports:
       - "${POSTGRES_PORT:-5432}:5432"
     volumes:
-      - postgres_data:/var/lib/postgresql/data
+      - postgres-data:/var/lib/postgresql/data
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER}"]
       interval: 10s
@@ -17,24 +17,24 @@ services:
       retries: 5
 
   eventstore:
-    image: eventstore/eventstore:24.2.0  # Latest stable version of EventStore
-    container_name: system-board-eventstore
+    image: docker.kurrent.io/kurrent-latest/kurrentdb:latest  # Latest stable version of EventStore
     environment:
-      EVENTSTORE_CLUSTER_SIZE: 1
-      EVENTSTORE_RUN_PROJECTIONS: All
-      EVENTSTORE_START_STANDARD_PROJECTIONS: true
-      EVENTSTORE_EXT_TCP_PORT: ${EVENTSTORE_TCP_PORT}
-      EVENTSTORE_HTTP_PORT: ${EVENTSTORE_HTTP_PORT}
-      EVENTSTORE_INSECURE: true
-      EVENTSTORE_ENABLE_EXTERNAL_TCP: true
-      EVENTSTORE_ENABLE_ATOM_PUB_OVER_HTTP: true
+      KURRENTDB_CLUSTER_SIZE: 1
+      KURRENTDB_RUN_PROJECTIONS: All
+      KURRENTDB_START_STANDARD_PROJECTIONS: true
+      KURRENTDB_EXT_TCP_PORT: ${KURRENTDB_TCP_PORT}
+      KURRENTDB_HTTP_PORT: ${KURRENTDB_HTTP_PORT}
+      KURRENTDB_INSECURE: true
+      KURRENTDB_ENABLE_EXTERNAL_TCP: true
+      KURRENTDB_ENABLE_ATOM_PUB_OVER_HTTP: true
     ports:
-      - "${EVENTSTORE_TCP_PORT}:${EVENTSTORE_TCP_PORT}"
-      - "${EVENTSTORE_HTTP_PORT}:${EVENTSTORE_HTTP_PORT}"
+      - "${KURRENTDB_TCP_PORT}:${KURRENTDB_TCP_PORT}"
+      - "${KURRENTDB_HTTP_PORT}:${KURRENTDB_HTTP_PORT}"
     volumes:
-      - eventstore_data:/var/lib/eventstore
+      - kurrentdb-volume-data:/var/lib/kurrentdb
+      - kurrentdb-volume-log:/var/log/kurrentdb
     healthcheck:
-      test: ["CMD-SHELL", "curl -f http://localhost:${EVENTSTORE_HTTP_PORT}/health/live || exit 1"]
+      test: ["CMD-SHELL", "curl -f http://localhost:${KURRENTDB_HTTP_PORT}/health/live || exit 1"]
       interval: 10s
       timeout: 5s
       retries: 5
@@ -45,7 +45,7 @@ services:
     ports:
       - "${REDIS_PORT}:6379"
     volumes:
-      - redis_data:/data
+      - redis-data:/data
     healthcheck:
       test: ["CMD", "redis-cli", "ping"]
       interval: 10s
@@ -62,8 +62,8 @@ services:
     ports:
       - "${ZOOKEEPER_PORT}:${ZOOKEEPER_PORT}"
     volumes:
-      - zookeeper_data:/var/lib/zookeeper/data
-      - zookeeper_logs:/var/lib/zookeeper/log
+      - zookeeper-data:/var/lib/zookeeper/data
+      - zookeeper-logs:/var/lib/zookeeper/log
 
   kafka:
     # Using Confluent CP for better tooling and Kafka management features
@@ -81,7 +81,7 @@ services:
       KAFKA_TRANSACTION_STATE_LOG_MIN_ISR: 1
       KAFKA_TRANSACTION_STATE_LOG_REPLICATION_FACTOR: 1
     volumes:
-      - kafka_data:/var/lib/kafka/data
+      - kafka-data:/var/lib/kafka/data
     healthcheck:
       test: ["CMD-SHELL", "kafka-topics --bootstrap-server localhost:${KAFKA_PORT} --list"]
       interval: 30s
@@ -89,9 +89,10 @@ services:
       retries: 5
 
 volumes:
-  postgres_data:
-  eventstore_data:
-  redis_data:
-  zookeeper_data:
-  zookeeper_logs:
-  kafka_data:
+  postgres-data:
+  kurrentdb-volume-data:
+  kurrentdb-volume-log:
+  redis-data:
+  zookeeper-data:
+  zookeeper-logs:
+  kafka-data:
