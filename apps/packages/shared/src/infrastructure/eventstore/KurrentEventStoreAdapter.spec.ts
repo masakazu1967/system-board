@@ -3,10 +3,7 @@ import { Logger } from '@nestjs/common';
 import { mock, MockProxy } from 'jest-mock-extended';
 import { EventStoreDBClient } from '@eventstore/db-client';
 import { KurrentEventStoreAdapter } from './KurrentEventStoreAdapter';
-import {
-  KURRENT_WRITE_CLIENT,
-  KURRENT_READ_CLIENT,
-} from './KurrentModule';
+import { KURRENT_WRITE_CLIENT, KURRENT_READ_CLIENT } from './KurrentModule';
 import {
   AppendToStreamEvent,
   AppendOptions,
@@ -178,10 +175,13 @@ describe('KurrentEventStoreAdapter', () => {
       await expect(adapter.appendToStream(streamName, events)).rejects.toThrow(
         'Append failed',
       );
-      expect(loggerErrorSpy).toHaveBeenCalledWith('Failed to append to stream', {
-        streamName,
-        error: 'Append failed',
-      });
+      expect(loggerErrorSpy).toHaveBeenCalledWith(
+        'Failed to append to stream',
+        {
+          streamName,
+          error: 'Append failed',
+        },
+      );
     });
 
     it('should handle non-Error exceptions', async () => {
@@ -193,10 +193,13 @@ describe('KurrentEventStoreAdapter', () => {
       await expect(adapter.appendToStream(streamName, events)).rejects.toBe(
         'String error',
       );
-      expect(loggerErrorSpy).toHaveBeenCalledWith('Failed to append to stream', {
-        streamName,
-        error: 'String error',
-      });
+      expect(loggerErrorSpy).toHaveBeenCalledWith(
+        'Failed to append to stream',
+        {
+          streamName,
+          error: 'String error',
+        },
+      );
     });
   });
 
@@ -455,14 +458,11 @@ describe('KurrentEventStoreAdapter', () => {
       const result = await adapter.readCategoryStream(category);
 
       // Assert
-      expect(readClient.readStream).toHaveBeenCalledWith(
-        expectedStreamName,
-        {
-          direction: 'forwards',
-          fromRevision: 'start',
-          maxCount: undefined,
-        },
-      );
+      expect(readClient.readStream).toHaveBeenCalledWith(expectedStreamName, {
+        direction: 'forwards',
+        fromRevision: 'start',
+        maxCount: undefined,
+      });
       expect(result).toHaveLength(1);
       expect(result[0].id).toBe('event-1');
     });
@@ -487,14 +487,11 @@ describe('KurrentEventStoreAdapter', () => {
       await adapter.readCategoryStream(category, options);
 
       // Assert
-      expect(readClient.readStream).toHaveBeenCalledWith(
-        expectedStreamName,
-        {
-          direction: 'backwards',
-          fromRevision: BigInt(10),
-          maxCount: 5,
-        },
-      );
+      expect(readClient.readStream).toHaveBeenCalledWith(expectedStreamName, {
+        direction: 'backwards',
+        fromRevision: BigInt(10),
+        maxCount: 5,
+      });
     });
   });
 
