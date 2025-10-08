@@ -10,6 +10,8 @@ services:
       - "${POSTGRES_PORT:-5432}:5432"
     volumes:
       - postgres-data:/var/lib/postgresql/data
+    env_file:
+      - .env.local
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER}"]
       interval: 10s
@@ -27,6 +29,8 @@ services:
       KURRENTDB_INSECURE: true
       KURRENTDB_ENABLE_EXTERNAL_TCP: true
       KURRENTDB_ENABLE_ATOM_PUB_OVER_HTTP: true
+    env_file:
+      - .env.local
     ports:
       - "${KURRENTDB_TCP_PORT}:${KURRENTDB_TCP_PORT}"
       - "${KURRENTDB_HTTP_PORT}:${KURRENTDB_HTTP_PORT}"
@@ -44,6 +48,8 @@ services:
     container_name: system-board-redis
     ports:
       - "${REDIS_PORT}:6379"
+    env_file:
+      - .env.local
     volumes:
       - redis-data:/data
     healthcheck:
@@ -54,39 +60,48 @@ services:
 
   zookeeper:
     # Using Confluent CP for better Kafka integration and enterprise features
-    image: confluentinc/cp-zookeeper:7.7.0
+    image: confluentinc/cp-zookeeper:7.9.0
     container_name: system-board-zookeeper
     environment:
       ZOOKEEPER_CLIENT_PORT: ${ZOOKEEPER_PORT}
       ZOOKEEPER_TICK_TIME: 2000
     ports:
       - "${ZOOKEEPER_PORT}:${ZOOKEEPER_PORT}"
+    env_file:
+      - .env.local
     volumes:
       - zookeeper-data:/var/lib/zookeeper/data
       - zookeeper-logs:/var/lib/zookeeper/log
 
   kafka:
     # Using Confluent CP for better tooling and Kafka management features
-    image: confluentinc/cp-kafka:7.7.0
+    image: confluentinc/cp-kafka:7.9.0
     container_name: system-board-kafka
     depends_on:
       - zookeeper
     ports:
-      - "${KAFKA_PORT}:9092"
+      - "9092:9092"
+      - "29092:29092" 
     environment:
       KAFKA_BROKER_ID: 1
       KAFKA_ZOOKEEPER_CONNECT: zookeeper:${ZOOKEEPER_PORT}
-      KAFKA_ADVERTISED_LISTENERS: PLAINTEXT://localhost:${KAFKA_PORT}
+      KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: PLAINTEXT:PLAINTEXT,PLAINTEXT_INTERNAL:PLAINTEXT
+      KAFKA_LISTENERS: PLAINTEXT://0.0.0.0:9092,PLAINTEXT_INTERNAL://0.0.0.0:29092
+      KAFKA_ADVERTISED_LISTENERS: PLAINTEXT://localhost:9092,PLAINTEXT_INTERNAL://kafka:29092
+      KAFKA_INTER_BROKER_LISTENER_NAME: PLAINTEXT_INTERNAL
       KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 1
       KAFKA_TRANSACTION_STATE_LOG_MIN_ISR: 1
       KAFKA_TRANSACTION_STATE_LOG_REPLICATION_FACTOR: 1
+    env_file:
+      - .env.local
     volumes:
       - kafka-data:/var/lib/kafka/data
     healthcheck:
-      test: ["CMD-SHELL", "kafka-topics --bootstrap-server localhost:${KAFKA_PORT} --list"]
+      test: ["CMD-SHELL", "kafka-topics --bootstrap-server localhost:9092 --list"]
       interval: 30s
       timeout: 10s
       retries: 5
+      start_period: 40s
 
 volumes:
   postgres-data:
