@@ -1,12 +1,6 @@
 // shared/infrastructure/event-store/adapters/kurrent-event-store.adapter.ts
 import { Injectable, Inject, Logger } from '@nestjs/common';
 import {
-  EventStoreDBClient,
-  EventType,
-  jsonEvent,
-  ResolvedEvent,
-} from '@eventstore/db-client';
-import {
   EventStore,
   AppendToStreamEvent,
   AppendOptions,
@@ -16,6 +10,12 @@ import {
 } from './EventStore';
 
 import { KURRENT_WRITE_CLIENT, KURRENT_READ_CLIENT } from './KurrentModule';
+import {
+  EventType,
+  jsonEvent,
+  KurrentDBClient,
+  ResolvedEvent,
+} from '@kurrent/kurrentdb-client';
 
 @Injectable()
 export class KurrentEventStoreAdapter implements EventStore {
@@ -23,9 +23,9 @@ export class KurrentEventStoreAdapter implements EventStore {
 
   constructor(
     @Inject(KURRENT_WRITE_CLIENT)
-    private readonly writeClient: EventStoreDBClient,
+    private readonly writeClient: KurrentDBClient,
     @Inject(KURRENT_READ_CLIENT)
-    private readonly readClient: EventStoreDBClient,
+    private readonly readClient: KurrentDBClient,
   ) {}
 
   async appendToStream(
@@ -47,9 +47,7 @@ export class KurrentEventStoreAdapter implements EventStore {
         streamName,
         kurrentEvents,
         {
-          expectedRevision: this.convertExpectedRevision(
-            options?.expectedRevision,
-          ),
+          streamState: this.convertExpectedRevision(options?.expectedRevision),
         },
       );
 
@@ -116,10 +114,9 @@ export class KurrentEventStoreAdapter implements EventStore {
         maxCount: 1,
       });
 
-      for await (const _ of events) {
-        return true;
-      }
-      return false;
+      const iterator = events[Symbol.asyncIterator]();
+      const result = await iterator.next();
+      return !result.done;
     } catch (error) {
       if (this.isStreamNotFound(error)) {
         return false;
