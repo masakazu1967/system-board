@@ -6,7 +6,6 @@ import {
   EventPersistenceService,
   EVENT_STORE,
 } from './EventPersistenceService';
-import { EventStoreMessageBrokerController } from '../../presentation/EventStoreMessageBrokerController';
 
 @Global()
 @Module({})
@@ -15,7 +14,6 @@ export class EventStoreModule {
     return {
       module: EventStoreModule,
       imports: [KurrentModule.forRoot()],
-      controllers: [EventStoreMessageBrokerController],
       providers: [
         {
           provide: EVENT_STORE,
