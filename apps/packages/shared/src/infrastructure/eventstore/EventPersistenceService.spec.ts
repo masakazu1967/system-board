@@ -342,8 +342,10 @@ describe('EventPersistenceService', () => {
     it('should use event type from domain event', async () => {
       // Arrange
       EventSerializerRegistry.register('CustomEventType', {
-        serialize: (data: any) => data,
-        deserialize: (data: any) => data,
+        serialize: (data: Record<string, unknown>): Record<string, unknown> =>
+          data,
+        deserialize: (data: Record<string, unknown>): Record<string, unknown> =>
+          data,
       });
       const event = new TestEvent('CustomEventType', 'type-test');
 
@@ -366,8 +368,10 @@ describe('EventPersistenceService', () => {
   describe('error handling', () => {
     beforeEach(() => {
       EventSerializerRegistry.register('TestEvent', {
-        serialize: (data: any) => data,
-        deserialize: (data: any) => data,
+        serialize: (data: Record<string, unknown>): Record<string, unknown> =>
+          data,
+        deserialize: (data: Record<string, unknown>): Record<string, unknown> =>
+          data,
       });
     });
 
@@ -419,8 +423,10 @@ describe('EventPersistenceService', () => {
         nextExpectedRevision: 1,
       });
       EventSerializerRegistry.register('TestEvent', {
-        serialize: (data: any) => data,
-        deserialize: (data: any) => data,
+        serialize: (data: Record<string, unknown>): Record<string, unknown> =>
+          data,
+        deserialize: (data: Record<string, unknown>): Record<string, unknown> =>
+          data,
       });
     });
 

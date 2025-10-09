@@ -4,13 +4,20 @@ import { EventSerializer } from './EventSerializer';
 describe('EventSerializerRegistry', () => {
   // テスト用のシリアライザー
   const mockSerializer: EventSerializer = {
-    serialize: jest.fn((data: any) => ({ serialized: true, ...data })),
-    deserialize: jest.fn((data: any) => ({ deserialized: true, ...data })),
+    serialize: jest.fn((data: Record<string, unknown>) => ({
+      serialized: true,
+      ...data,
+    })),
+    deserialize: jest.fn((data: Record<string, unknown>) => ({
+      deserialized: true,
+      ...data,
+    })),
   };
 
   const simpleSerializer: EventSerializer = {
-    serialize: (data: any) => data,
-    deserialize: (data: any) => data,
+    serialize: (data: Record<string, unknown>): Record<string, unknown> => data,
+    deserialize: (data: Record<string, unknown>): Record<string, unknown> =>
+      data,
   };
 
   beforeEach(() => {
@@ -183,12 +190,15 @@ describe('EventSerializerRegistry', () => {
     it('should handle complex nested data structures', () => {
       // Arrange
       const complexSerializer: EventSerializer = {
-        serialize: (data: any) => ({
+        serialize: (
+          data: Record<string, unknown>,
+        ): Record<string, unknown> => ({
           serialized: true,
-          nested: { ...data.nested },
-          array: [...data.array],
+          nested: { ...(data.nested as Record<string, unknown>) },
+          array: [...(data.array as unknown[])],
         }),
-        deserialize: (data: any) => data,
+        deserialize: (data: Record<string, unknown>): Record<string, unknown> =>
+          data,
       };
       EventSerializerRegistry.register('ComplexEvent', complexSerializer);
 
@@ -277,8 +287,11 @@ describe('EventSerializerRegistry', () => {
     it('should handle complex nested data structures', () => {
       // Arrange
       const complexSerializer: EventSerializer = {
-        serialize: (data: any) => data,
-        deserialize: (data: any) => ({
+        serialize: (data: Record<string, unknown>): Record<string, unknown> =>
+          data,
+        deserialize: (
+          data: Record<string, unknown>,
+        ): Record<string, unknown> => ({
           deserialized: true,
           original: data,
         }),
@@ -487,11 +500,16 @@ describe('EventSerializerRegistry', () => {
     it('should handle complete serialization/deserialization cycle', () => {
       // Arrange
       const roundTripSerializer: EventSerializer = {
-        serialize: (data: any) => ({
+        serialize: (
+          data: Record<string, unknown>,
+        ): Record<string, unknown> => ({
           ...data,
           serializedAt: '2025-10-06T00:00:00Z',
         }),
-        deserialize: (data: any) => {
+        deserialize: (
+          data: Record<string, unknown>,
+        ): Record<string, unknown> => {
+          // eslint-disable-next-line @typescript-eslint/no-unused-vars
           const { serializedAt, ...rest } = data;
           return rest;
         },
@@ -518,16 +536,32 @@ describe('EventSerializerRegistry', () => {
     it('should support multiple event types in a realistic scenario', () => {
       // Arrange
       const systemEventSerializer: EventSerializer = {
-        serialize: (data: any) => ({ type: 'system', ...data }),
-        deserialize: (data: any) => {
+        serialize: (
+          data: Record<string, unknown>,
+        ): Record<string, unknown> => ({
+          type: 'system',
+          ...data,
+        }),
+        deserialize: (
+          data: Record<string, unknown>,
+        ): Record<string, unknown> => {
+          // eslint-disable-next-line @typescript-eslint/no-unused-vars
           const { type, ...rest } = data;
           return rest;
         },
       };
 
       const taskEventSerializer: EventSerializer = {
-        serialize: (data: any) => ({ type: 'task', ...data }),
-        deserialize: (data: any) => {
+        serialize: (
+          data: Record<string, unknown>,
+        ): Record<string, unknown> => ({
+          type: 'task',
+          ...data,
+        }),
+        deserialize: (
+          data: Record<string, unknown>,
+        ): Record<string, unknown> => {
+          // eslint-disable-next-line @typescript-eslint/no-unused-vars
           const { type, ...rest } = data;
           return rest;
         },
