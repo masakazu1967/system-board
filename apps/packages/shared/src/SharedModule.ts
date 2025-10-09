@@ -1,7 +1,5 @@
 import { Module } from '@nestjs/common';
 import { ConfigModule } from '@nestjs/config';
-import { KafkaModule } from './infrastructure/kafka/KafkaModule';
-import { TypeOrmProcessedEventService } from './infrastructure/typeorm/TypeOrmProcessedEventService';
 import { IdempotentEventHandler } from './application/base/IdempotentEventHandler';
 
 /**
@@ -14,13 +12,8 @@ import { IdempotentEventHandler } from './application/base/IdempotentEventHandle
     ConfigModule.forRoot({
       isGlobal: true,
     }),
-    KafkaModule,
   ],
-  providers: [
-    // Event Infrastructure
-    TypeOrmProcessedEventService,
-    IdempotentEventHandler,
-  ],
-  exports: [KafkaModule, TypeOrmProcessedEventService, IdempotentEventHandler],
+  providers: [IdempotentEventHandler],
+  exports: [IdempotentEventHandler],
 })
 export class SharedModule {}

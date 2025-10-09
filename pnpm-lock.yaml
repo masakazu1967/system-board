@@ -1180,6 +1180,15 @@ importers:
       '@system-board/shared':
         specifier: workspace:*
         version: link:../shared
+      '@system-board/shared-kafka':
+        specifier: workspace:*
+        version: link:../shared-kafka
+      '@system-board/shared-kurrentdb':
+        specifier: workspace:*
+        version: link:../shared-kurrentdb
+      '@system-board/shared-typeorm':
+        specifier: workspace:*
+        version: link:../shared-typeorm
       kafkajs:
         specifier: ^2.2.4
         version: 2.2.4
