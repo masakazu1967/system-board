@@ -46,3 +46,6 @@ curl -LsSf https://astral.sh/uv/install.sh | sh
 
 # jekyllのインストール
 gem install jekyll bundler
+
+# KurrentDBのインストール
+sudo apt-get install kurrentdb=26.0.1

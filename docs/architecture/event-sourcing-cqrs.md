@@ -284,20 +284,20 @@ package "Shared Application Layer" {
     +subscribe(eventType: string, handler: EventHandler): void
   }
 
-  interface ProcessedEventRepository {
+  interface ProcessedEventService {
     +isProcessed(eventId: string): Promise<boolean>
     +markAsProcessed(eventId: string, eventType: string, processedAt: Date): Promise<void>
   }
 
   class IdempotentEventHandler {
-    +processedEventRepository: ProcessedEventRepository
+    +processedEventService: ProcessedEventService
     +handleWithIdempotency<T>(event: T, handler: Function): Promise<void>
   }
 }
 
 package "Shared Infrastructure Layer" {
   class KafkaEventPublisher implements EventPublisher {
-    +kafkaService: KafkaService
+    +kafkaClient: ClientKafka
     +publish(event: DomainEvent): Promise<void>
     +publishAll(events: DomainEvent[]): Promise<void>
     -determineTopicByEventType(eventType: string): string
@@ -305,13 +305,13 @@ package "Shared Infrastructure Layer" {
 
   class KurrentKafkaSubscriber implements EventSubscriber {
     +kurrentClient: KurrentDBClient
-    +kafkaService: KafkaService
     +subscribe(eventType: string, handler: EventHandler): void
+    +handleKafkaMessage(payload: any, context: KafkaContext): Promise<void>
     -persistToEventStore(eventData: any, eventType: string): Promise<void>
     -getStreamName(aggregateType: string, aggregateId: string): string
   }
 
-  class PostgreSQLProcessedEventRepository implements ProcessedEventRepository {
+  class PostgreSQLProcessedEventService implements ProcessedEventService {
     +database: Database
     +isProcessed(eventId: string): Promise<boolean>
     +markAsProcessed(eventId: string, eventType: string, processedAt: Date): Promise<void>
@@ -319,13 +319,26 @@ package "Shared Infrastructure Layer" {
   }
 }
 
-package "External Services" {
-  class KafkaService {
-    +send(message: any): Promise<void>
-    +subscribe(config: any): Promise<void>
-    +run(config: any): void
+package "NestJS Framework Services" {
+  class ClientKafka {
+    <<@nestjs/microservices>>
+    +emit(pattern: string, data: any): Observable<any>
+    +send(pattern: string, data: any): Observable<any>
+    +subscribeToResponseOf(pattern: string): void
+    +close(): void
   }
 
+  class KafkaContext {
+    <<@nestjs/microservices>>
+    +getTopic(): string
+    +getPartition(): number
+    +getMessage(): KafkaMessage
+    +getConsumer(): Consumer
+    +getHeartbeat(): Heartbeat
+  }
+}
+
+package "External Services" {
   class KurrentDBClient {
     +appendToStream(streamName: string, events: any[], options: any): Promise<void>
   }
@@ -356,11 +369,11 @@ TaskEventHandler --> IdempotentEventHandler : uses
 VulnerabilityTaskEventHandler --> IdempotentEventHandler : uses
 
 ' Infrastructure Dependencies
-KafkaEventPublisher --> KafkaService : uses
+KafkaEventPublisher --> ClientKafka : uses
 KurrentKafkaSubscriber --> KurrentDBClient : uses
-KurrentKafkaSubscriber --> KafkaService : uses
-IdempotentEventHandler --> ProcessedEventRepository : depends on (interface)
-PostgreSQLProcessedEventRepository --> ProcessedEventRepository : implements
+KurrentKafkaSubscriber --> KafkaContext : uses
+IdempotentEventHandler --> ProcessedEventService : depends on (interface)
+PostgreSQLProcessedEventService --> ProcessedEventService : implements
 
 @enduml
 ```
@@ -370,17 +383,18 @@ Infrastructure Dependencies
 ```plantuml
 @startuml
 class KafkaEventPublisher
-class KafkaService
+class ClientKafka <<@nestjs/microservices>>
 class KurrentKafkaSubscriber
+class KafkaContext <<@nestjs/microservices>>
 class IdempotentEventHandler
-interface ProcessedEventRepository
-class PostgreSQLProcessedEventRepository
+interface ProcessedEventService
+class PostgreSQLProcessedEventService
 
-KafkaEventPublisher --> KafkaService : uses
+KafkaEventPublisher --> ClientKafka : uses
 KurrentKafkaSubscriber --> KurrentDBClient : uses
-KurrentKafkaSubscriber -> KafkaService : uses
-ProcessedEventRepository <|.. PostgreSQLProcessedEventRepository : implements
-IdempotentEventHandler -> ProcessedEventRepository : depends on (interface)
+KurrentKafkaSubscriber -> KafkaContext : uses
+ProcessedEventService <|.. PostgreSQLProcessedEventService : implements
+IdempotentEventHandler -> ProcessedEventService : depends on (interface)
 @enduml
 ```
 
@@ -913,37 +927,64 @@ export class TaskCreated extends DomainEvent {
 
 ### 5.1 Kafkaメッセージ受信→Kurrent DB保存パターン
 
+**NestJS Kafka 統合を使用**:
+
 ```typescript
+import { Controller, Injectable, Logger } from '@nestjs/common';
+import { EventPattern, Payload, Ctx, KafkaContext } from '@nestjs/microservices';
+
+@Controller()
 @Injectable()
-export class KurrentKafkaSubscriber implements OnModuleInit {
+export class KurrentKafkaSubscriber {
+  private readonly logger = new Logger(KurrentKafkaSubscriber.name);
+
   constructor(
     private readonly kurrentClient: KurrentDBClient,
-    private readonly kafkaService: KafkaService,
-    private readonly logger: Logger
   ) {}
 
-  async onModuleInit(): Promise<void> {
-    // Kafkaからイベントを受信してKurrent DBに保存
-    await this.subscribeToKafkaEvents();
+  /**
+   * システムイベントの受信（NestJS @EventPattern デコレータ使用）
+   */
+  @EventPattern('system-events')
+  async handleSystemEvents(
+    @Payload() payload: any,
+    @Ctx() context: KafkaContext,
+  ): Promise<void> {
+    await this.handleKafkaMessage(payload, context);
   }
 
-  private async subscribeToKafkaEvents(): Promise<void> {
-    await this.kafkaService.subscribe({
-      topics: ['system-events', 'vulnerability-events', 'task-events'],
-      groupId: 'eventstore-persistence-group'
-    });
-
-    this.kafkaService.run({
-      eachMessage: async ({ topic, partition, message }) => {
-        await this.handleKafkaMessage(topic, message);
-      }
-    });
+  /**
+   * 脆弱性イベントの受信
+   */
+  @EventPattern('vulnerability-events')
+  async handleVulnerabilityEvents(
+    @Payload() payload: any,
+    @Ctx() context: KafkaContext,
+  ): Promise<void> {
+    await this.handleKafkaMessage(payload, context);
   }
 
-  private async handleKafkaMessage(topic: string, message: any): Promise<void> {
+  /**
+   * タスクイベントの受信
+   */
+  @EventPattern('task-events')
+  async handleTaskEvents(
+    @Payload() payload: any,
+    @Ctx() context: KafkaContext,
+  ): Promise<void> {
+    await this.handleKafkaMessage(payload, context);
+  }
+
+  private async handleKafkaMessage(
+    payload: any,
+    context: KafkaContext,
+  ): Promise<void> {
+    const originalMessage = context.getMessage();
+    const topic = context.getTopic();
+
     try {
-      const eventData = JSON.parse(message.value.toString());
-      const eventType = message.headers['event-type'].toString();
+      const eventData = payload;
+      const eventType = originalMessage.headers['event-type']?.toString() || payload.eventType;
 
       // Kurrent DBに永続化
       await this.persistToEventStore(eventData, eventType);
@@ -951,12 +992,13 @@ export class KurrentKafkaSubscriber implements OnModuleInit {
       this.logger.debug('Event persisted to Kurrent DB from Kafka', {
         eventType,
         eventId: eventData.eventId,
-        topic
+        topic,
+        partition: context.getPartition(),
       });
     } catch (error) {
       this.logger.error('Failed to persist event to Kurrent DB', {
         topic,
-        error: error.message
+        error: error instanceof Error ? error.message : String(error),
       });
       throw error;
     }
@@ -972,12 +1014,12 @@ export class KurrentKafkaSubscriber implements OnModuleInit {
       metadata: {
         correlationId: eventData.correlationId,
         causationId: eventData.causationId,
-        occurredOn: eventData.occurredOn
-      }
+        occurredOn: eventData.occurredOn,
+      },
     };
 
     await this.kurrentClient.appendToStream(streamName, [eventToStore], {
-      expectedRevision: 'any'
+      expectedRevision: 'any',
     });
   }
 
@@ -989,78 +1031,184 @@ export class KurrentKafkaSubscriber implements OnModuleInit {
 
 ### 5.2 Command Handler統合Kafkaイベント配信
 
+**NestJS ClientKafka を使用したイベント発行**:
+
 ```typescript
+import { Inject, Injectable, Logger, OnModuleInit } from '@nestjs/common';
+import { ClientKafka } from '@nestjs/microservices';
+import { lastValueFrom } from 'rxjs';
+
 @Injectable()
-export class KafkaFirstEventPublisher implements DomainEventPublisher {
+export class KafkaEventPublisher implements EventPublisher, OnModuleInit {
+  private readonly logger = new Logger(KafkaEventPublisher.name);
+
   constructor(
-    private readonly kafkaService: KafkaService,
-    private readonly logger: Logger
+    @Inject('KAFKA_CLIENT') private readonly kafkaClient: ClientKafka,
   ) {}
 
+  async onModuleInit(): Promise<void> {
+    // レスポンストピックの購読設定（必要に応じて）
+    const topics = [
+      'system-events',
+      'vulnerability-events',
+      'task-events',
+      'security-events',
+      'urgent-events',
+    ];
+
+    topics.forEach((topic) => {
+      this.kafkaClient.subscribeToResponseOf(topic);
+    });
+
+    await this.kafkaClient.connect();
+  }
+
   async publishAll(events: DomainEvent[]): Promise<void> {
-    const publishPromises = events.map(event => this.publish(event));
+    const publishPromises = events.map((event) => this.publish(event));
     await Promise.all(publishPromises);
   }
 
   async publish(event: DomainEvent): Promise<void> {
     const topic = this.determineTopicByEventType(event.eventType);
 
-    const message = {
-      key: event.aggregateId,
-      value: JSON.stringify({
-        eventId: event.eventId,
-        eventType: event.eventType,
-        aggregateId: event.aggregateId,
-        aggregateType: event.aggregateType,
-        aggregateVersion: event.aggregateVersion,
-        occurredOn: event.occurredOn.toISOString(),
-        correlationId: event.correlationId,
-        causationId: event.causationId,
-        data: event.getData()
-      }),
-      headers: {
-        'content-type': 'application/json',
-        'event-type': event.eventType,
-        'correlation-id': event.correlationId
-      }
+    const payload = {
+      eventId: event.eventId,
+      eventType: event.eventType,
+      aggregateId: event.aggregateId,
+      aggregateType: event.aggregateType,
+      aggregateVersion: event.aggregateVersion,
+      occurredOn: event.occurredOn.toISOString(),
+      correlationId: event.correlationId,
+      causationId: event.causationId,
+      data: event.getData(),
     };
 
-    // Kafkaへの配信成功を待ってからCommand Handler完了
-    await this.kafkaService.send({
-      topic,
-      messages: [message]
-    });
+    // NestJS ClientKafka の emit() を使用（Fire-and-Forget）
+    // Kafka配信成功を待ってからCommand Handler完了
+    await lastValueFrom(
+      this.kafkaClient.emit(topic, {
+        key: event.aggregateId,
+        value: payload,
+        headers: {
+          'content-type': 'application/json',
+          'event-type': event.eventType,
+          'correlation-id': event.correlationId,
+        },
+      }),
+    );
 
     this.logger.debug('Event published to Kafka first (no double commit)', {
       eventType: event.eventType,
       aggregateId: event.aggregateId,
-      topic
+      topic,
     });
   }
 
   private determineTopicByEventType(eventType: string): string {
     // イベントタイプごとのトピック振り分け
-    const topicMap = {
+    const topicMap: Record<string, string> = {
       // System Management Context
-      [SystemRegistered.EVENT_NAME]: 'system-events',
-      'SystemConfigurationUpdated': 'system-events',
-      'SystemDecommissioned': 'system-events',
-      'SystemSecurityAlert': 'security-events',
+      SystemRegistered: 'system-events',
+      SystemConfigurationUpdated: 'system-events',
+      SystemDecommissioned: 'system-events',
+      SystemSecurityAlert: 'security-events',
 
       // Vulnerability Management Context
-      [VulnerabilityDetected.EVENT_NAME]: 'vulnerability-events',
-      'VulnerabilityScanCompleted': 'vulnerability-events',
-      'VulnerabilityResolved': 'vulnerability-events',
+      VulnerabilityDetected: 'vulnerability-events',
+      VulnerabilityScanCompleted: 'vulnerability-events',
+      VulnerabilityResolved: 'vulnerability-events',
+      VulnerabilityScanInitiated: 'vulnerability-events',
 
       // Task Management Context
-      [TaskCreated.EVENT_NAME]: 'task-events',
-      'TaskCompleted': 'task-events',
-      'HighPriorityTaskCreated': 'urgent-events'
+      TaskCreated: 'task-events',
+      TaskCompleted: 'task-events',
+      HighPriorityTaskCreated: 'urgent-events',
     };
 
     return topicMap[eventType] || 'domain-events';
   }
 }
+```
+
+### 5.3 NestJS Kafka モジュール設定
+
+**app.module.ts での Kafka クライアント設定**:
+
+```typescript
+import { Module } from '@nestjs/common';
+import { ClientsModule, Transport } from '@nestjs/microservices';
+import { KafkaEventPublisher } from './infrastructure/kafka/KafkaEventPublisher';
+import { KurrentKafkaSubscriber } from './infrastructure/eventstore/KurrentKafkaSubscriber';
+
+@Module({
+  imports: [
+    // Kafka クライアントの登録
+    ClientsModule.register([
+      {
+        name: 'KAFKA_CLIENT',
+        transport: Transport.KAFKA,
+        options: {
+          client: {
+            clientId: 'system-board',
+            brokers: ['localhost:9092'], // 環境変数から読み込む
+          },
+          consumer: {
+            groupId: 'system-board-consumer',
+            // 冪等性保証のため、at-least-once配信
+            allowAutoTopicCreation: false,
+          },
+          producer: {
+            // トランザクション設定
+            idempotent: true,
+            maxInFlightRequests: 5,
+            transactionalId: 'system-board-producer',
+          },
+        },
+      },
+    ]),
+  ],
+  providers: [
+    KafkaEventPublisher,
+    KurrentKafkaSubscriber,
+  ],
+  exports: [KafkaEventPublisher],
+})
+export class KafkaModule {}
+```
+
+**main.ts での Microservice ブートストラップ**:
+
+```typescript
+import { NestFactory } from '@nestjs/core';
+import { MicroserviceOptions, Transport } from '@nestjs/microservices';
+import { AppModule } from './app.module';
+
+async function bootstrap() {
+  // 通常のHTTPアプリケーション
+  const app = await NestFactory.create(AppModule);
+
+  // Kafka マイクロサービスの追加（ハイブリッドアプリケーション）
+  app.connectMicroservice<MicroserviceOptions>({
+    transport: Transport.KAFKA,
+    options: {
+      client: {
+        clientId: 'system-board',
+        brokers: [process.env.KAFKA_BROKERS || 'localhost:9092'],
+      },
+      consumer: {
+        groupId: 'eventstore-persistence-group',
+        // 処理済みイベントを再処理しない
+        sessionTimeout: 30000,
+        heartbeatInterval: 3000,
+      },
+    },
+  });
+
+  await app.startAllMicroservices();
+  await app.listen(3000);
+}
+
+bootstrap();
 ```
 
 ## 6. 冪等性保証とエラーハンドリング
@@ -1071,7 +1219,7 @@ export class KafkaFirstEventPublisher implements DomainEventPublisher {
 @Injectable()
 export class IdempotentEventHandler {
   constructor(
-    private readonly processedEventRepository: ProcessedEventRepository,
+    private readonly processedEventService: ProcessedEventService,
     private readonly logger: Logger
   ) {}
 
@@ -1080,7 +1228,7 @@ export class IdempotentEventHandler {
     handler: (event: T) => Promise<void>
   ): Promise<void> {
     // 処理済みイベントチェック
-    const isProcessed = await this.processedEventRepository.isProcessed(
+    const isProcessed = await this.processedEventService.isProcessed(
       event.eventId
     );
 
@@ -1097,7 +1245,7 @@ export class IdempotentEventHandler {
       await handler(event);
 
       // 処理済みマーク
-      await this.processedEventRepository.markAsProcessed(
+      await this.processedEventService.markAsProcessed(
         event.eventId,
         event.eventType,
         new Date()
