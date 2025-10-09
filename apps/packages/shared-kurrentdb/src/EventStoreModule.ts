@@ -1,11 +1,7 @@
 // shared/infrastructure/event-store/event-store.module.ts
 import { Module, Global, DynamicModule } from '@nestjs/common';
-import { KurrentModule } from './KurrentModule';
-import { KurrentEventStoreAdapter } from './KurrentEventStoreAdapter';
-import {
-  EventPersistenceService,
-  EVENT_STORE,
-} from './EventPersistenceService';
+import { KurrentModule, KurrentEventStoreAdapter } from './infrastructure';
+import { EventPersistenceService, EVENT_STORE } from '@system-board/shared';
 
 @Global()
 @Module({})

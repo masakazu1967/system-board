@@ -7,7 +7,7 @@ import {
   AppendResult,
   RecordedEvent,
   ReadStreamOptions,
-} from './EventStore';
+} from '@system-board/shared';
 
 import { KURRENT_WRITE_CLIENT, KURRENT_READ_CLIENT } from './KurrentModule';
 import {

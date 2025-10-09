@@ -1,7 +1,7 @@
 import { Injectable, Logger, Inject } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
 import { Repository } from 'typeorm';
-import { ProcessedEventService } from '../../application/interfaces/ProcessedEventService';
+import { ProcessedEventService } from '../../../../shared/src/application/interfaces/ProcessedEventService';
 import { ProcessedEvent } from './entities/ProcessedEvent.entity';
 import type { TypeOrmErrorHandler } from './utils/TypeOrmErrorHandler';
 import { TYPEORM_ERROR_HANDLER } from './utils/TypeormErrorHandlerProvider';
